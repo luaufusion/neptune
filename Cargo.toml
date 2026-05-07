@@ -1,0 +1,9 @@
+[package]
+name = "luaufusion-rt"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+v8 = { git = "https://github.com/luaufusion/rusty_v8", default-features = false, features = ["v8_enable_sandbox"], branch = "luaufusion" }
+tokio = { version = "1", features = ["full"] }
+serde = "1.0.228"
