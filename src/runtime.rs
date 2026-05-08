@@ -5,6 +5,8 @@ use v8::{ContextOptions, CreateParams};
 
 use crate::buffer::v8_new_array_buffer;
 use crate::extension::NativeObject;
+use crate::fsw::FilesystemWrapper;
+use crate::module::ModuleRegistry;
 
 /// The message passed from Tokio background tasks back to V8
 pub(super) struct AsyncResult {
@@ -57,14 +59,13 @@ pub(super) struct IsolateState {
     // needed for cppgc
     pub(super) cppgc_fallback_template: v8::Global<v8::ObjectTemplate>,
     pub(super) cppgc_type_templates: HashMap<TypeId, v8::Global<v8::FunctionTemplate>>,
+
+    // modules
+    pub(super) modules: ModuleRegistry
 }
 
 // Ensure V8 is only initialized once per process
 static V8_INIT: Once = Once::new();
-
-// ---------------------------------------------------------
-// 2. The Runtime Struct
-// ---------------------------------------------------------
 
 pub struct JsRuntime {
     isolate: v8::OwnedIsolate,
@@ -73,7 +74,7 @@ pub struct JsRuntime {
 }
 
 impl JsRuntime {
-    pub fn new(params: CreateParams, flags: Option<String>) -> Self {
+    pub fn new(params: CreateParams, flags: Option<String>, vfs: FilesystemWrapper) -> Self {
         // Init v8 platform if needed
         V8_INIT.call_once(|| {
             if let Some(flags) = flags {
@@ -111,6 +112,7 @@ impl JsRuntime {
             pending_promises: 0,
             cppgc_fallback_template,
             cppgc_type_templates: HashMap::new(),
+            modules: ModuleRegistry::new(vfs)
         });
 
         // Create global context
@@ -136,7 +138,7 @@ impl JsRuntime {
     }
 
     /// Register a NativeObject with the runtime
-    pub fn init_class<T: NativeObject>(&mut self) {
+    pub fn init_class<T: NativeObject>(&mut self, expose: bool) {
         let global_template = {
             v8::scope!(let scope, &mut self.isolate);
                         
@@ -146,7 +148,21 @@ impl JsRuntime {
 
         v8::scope!(let scope, &mut self.isolate); 
         let state = scope.get_slot_mut::<IsolateState>().unwrap();
-        state.cppgc_type_templates.insert(std::any::TypeId::of::<T>(), global_template);
+        state.cppgc_type_templates.insert(std::any::TypeId::of::<T>(), global_template.clone());
+
+        if expose {
+            let context = v8::Local::new(scope, &self.global_context);
+            let scope = &mut v8::ContextScope::new(scope, context);
+
+            let global = context.global(scope);
+            
+            let name_v8 = v8::String::new(scope, T::class_name()).unwrap();
+
+            // Get constructor func and save to global obj
+            let template = v8::Local::new(scope, global_template);
+            let constructor_func = template.get_function(scope).unwrap();
+            global.set(scope, name_v8.into(), constructor_func.into());
+        }
     }
 
     /// Executes synchronous JavaScript code

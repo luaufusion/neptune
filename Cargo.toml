@@ -7,3 +7,4 @@ edition = "2024"
 v8 = { git = "https://github.com/luaufusion/rusty_v8", default-features = false, features = ["v8_enable_sandbox"], branch = "luaufusion" }
 tokio = { version = "1", features = ["full"] }
 serde = "1.0.228"
+vfs = { git = "https://github.com/Anti-Raid/rust-vfs", features = ["embedded-fs"] } # TODO: switch to a mluau fork soon
