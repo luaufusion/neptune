@@ -160,20 +160,10 @@ impl MethodBuilder {
                 let promise = resolver.get_promise(scope);
                 let global_resolver = v8::Global::new(scope, resolver);
 
-                let (tx, promise_id) = {
-                    let state = scope.get_slot_mut::<IsolateState>().expect("IsolateState missing");
-                    // Get next promise id to use
-                    let id = state.next_promise_id;
-                    state.next_promise_id += 1;
-                    
-                    // Increment pending work so event loop knows not to exit
-                    state.pending_promises += 1;
-                    
-                    // Store the V8 Promise in the registry so the Tokio task can resolve it later
-                    state.promise_registry.insert(id, global_resolver);
-                    
+                let (tx, promise_id) = IsolateState::with_mut(scope, |state| {
+                    let id = state.attach_to_scheduler(global_resolver);                    
                     (state.tx.clone(), id)
-                };
+                });
                 
                 tokio::task::spawn_local(async move {
                     let result = future.await;

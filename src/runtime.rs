@@ -59,13 +59,14 @@ impl Value {
     }
 }
 
+type V8Result = Result<(), v8::Global<v8::Value>>;
+
 /// Internal v8 isolate state
 pub(super) struct IsolateState {
     pub(super) tx: mpsc::UnboundedSender<AsyncResult>,
     pub(super) promise_registry: HashMap<usize, v8::Global<v8::PromiseResolver>>,
     pub(super) next_promise_id: usize,
-    pub(super) pending_promises: usize,
-    pub(super) on_module_async_done_fn: v8::Global<v8::Function>,
+    pub(super) is_evaluating_module: bool,
 
 
     // needed for cppgc
@@ -73,8 +74,49 @@ pub(super) struct IsolateState {
     pub(super) cppgc_type_templates: HashMap<TypeId, v8::Global<v8::FunctionTemplate>>,
 
     // modules
-    pub(super) modules: ModuleRegistry
+    pub(super) modules: ModuleRegistry,
+    pub(super) module_promise_tracker: HashMap<u64, mpsc::UnboundedSender<V8Result>>,
+    pub(super) next_module_promise_tracker_id: u64,
 }
+
+impl IsolateState {
+    /// Run function `f` on the underlying IsolateState (immutable) from scope
+    #[inline(always)]
+    pub(super) fn with<'s, R>(scope: &v8::PinScope<'s, '_, ()>, f: impl FnOnce(&IsolateState) -> R) -> R {
+        let state = scope.get_slot::<Self>().unwrap();
+        f(state)
+    }
+
+    /// Run function `f` on the underlying IsolateState (mutable) from scope
+    #[inline(always)]
+    pub(super) fn with_mut<'s, R>(scope: &mut v8::PinScope<'s, '_, ()>, f: impl FnOnce(&mut IsolateState) -> R) -> R {
+        let state = scope.get_slot_mut::<Self>().unwrap();
+        f(state)
+    }
+
+    /// Attach a promise tracker for a module
+    pub(super) fn create_module_promise_tracker(&mut self) -> (u64, mpsc::UnboundedReceiver<V8Result>) {
+        let nmptid = self.next_module_promise_tracker_id;
+        self.next_module_promise_tracker_id += 1;
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.module_promise_tracker.insert(nmptid, tx);
+        (nmptid, rx)
+    }  
+
+    /// Attach a promise resolver to the scheduler
+    pub(super) fn attach_to_scheduler(&mut self, global_resolver: v8::Global<v8::PromiseResolver>) -> usize {
+        // Get next promise id to use
+        let id = self.next_promise_id;
+        self.next_promise_id += 1;
+        self.promise_registry.insert(id, global_resolver);
+        id
+    }
+
+    /// Returns the number of pending promises
+    pub(super) fn pending_promises(&self) -> usize {
+        self.promise_registry.len() + self.module_promise_tracker.len()
+    }
+}  
 
 // Ensure V8 is only initialized once per process
 static V8_INIT: Once = Once::new();
@@ -134,23 +176,16 @@ impl JsRuntime {
             v8::Global::new(scope, context)
         };
 
-        let on_module_async_done_fn = {
-            v8::scope!(let scope, &mut isolate);
-            let gc = v8::Local::new(scope, global_context.clone());
-            let scope = &mut v8::ContextScope::new(scope, gc);
-            let on_settled_fn = v8::Function::new(scope, on_module_async_done).unwrap();
-            v8::Global::new(scope, on_settled_fn)
-        };
-
         isolate.set_slot(IsolateState {
             tx,
             promise_registry: HashMap::new(),
             next_promise_id: 1,
-            pending_promises: 0,
-            on_module_async_done_fn,
+            is_evaluating_module: false,
             cppgc_fallback_template,
             cppgc_type_templates: HashMap::new(),
-            modules: ModuleRegistry::new(vfs)
+            modules: ModuleRegistry::new(vfs),
+            module_promise_tracker: HashMap::new(),
+            next_module_promise_tracker_id: 0
         });
 
         Self {
@@ -220,7 +255,7 @@ impl JsRuntime {
         Ok(())
     }
 
-    pub fn execute_main_module(&mut self, path: &str) -> Result<(), crate::Error> {
+    pub fn execute_main_module(&mut self, path: &str) -> Result<Option<mpsc::UnboundedReceiver<V8Result>>, crate::Error> {
         v8::scope!(let scope, &mut self.isolate);
         let global_context = v8::Local::new(scope, &self.global_context);
         let context = v8::Local::new(scope, global_context);
@@ -228,15 +263,14 @@ impl JsRuntime {
         v8::tc_scope!(let scope, scope);
 
         // Fetch the source code for the main entry point
-        let source_code = {
-            let state = scope.get_slot::<IsolateState>().unwrap();
+        let source_code = IsolateState::with_mut(scope, |state| {
             match state.modules.vfs.get_file(path.to_string()) {
-                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+                Ok(bytes) => return Ok(String::from_utf8_lossy(&bytes).into_owned()),
                 Err(e) => {
-                    return Err(format!("Failed to read main module {}: {:?}", path, e).into());
+                    return Err(format!("Failed to read main module {}: {:?}", path, e));
                 }
             }
-        };
+        })?;
 
         let code_v8 = v8::String::new(scope, &source_code).unwrap();
         let origin = create_module_origin(scope, &path, true); 
@@ -259,11 +293,10 @@ impl JsRuntime {
         // Register the main module to ensure referrer is known in module_resolve_callback
         let hash = main_module.get_identity_hash();
         let g_mod = v8::Global::new(scope, main_module);
-        {
-            let state = scope.get_slot_mut::<IsolateState>().unwrap();
+        IsolateState::with_mut(scope, |state| {
             state.modules.cache.insert(path.to_string(), g_mod);
             state.modules.paths.insert(hash.into(), path.to_string());
-        }
+        });
 
         // Instantiate the module graph
         // This recursively triggers your module_resolve_callback for all dependencies!
@@ -277,40 +310,36 @@ impl JsRuntime {
         }
 
         // Execute the code
-        match main_module.evaluate(scope) {
+        IsolateState::with_mut(scope, |s| s.is_evaluating_module = true);
+        let eval_result = main_module.evaluate(scope);
+        IsolateState::with_mut(scope, |s| s.is_evaluating_module = false);
+
+        match eval_result {
             Some(v) => {
-                // handle promises
-                if v.is_promise() {
-                    let promise = v8::Local::<v8::Promise>::try_from(v)?;
-                        if promise.state() == v8::PromiseState::Pending {
-                            // if pending, incr pending so event loop stays alive, then set module promise then/catch handler
-                            {
-                                let state = scope.get_slot_mut::<IsolateState>().unwrap();
-                                state.pending_promises += 1;
-                            }
-
-                            let on_module_async_done_fn = {
-                                let state = scope.get_slot::<IsolateState>().unwrap();
-                                v8::Local::new(scope, state.on_module_async_done_fn.clone())
-                            };
-
-                            promise.then(scope, on_module_async_done_fn).unwrap();
-                            promise.catch(scope, on_module_async_done_fn).unwrap();
-                        }
-                }
-
                 // perform microtask checkpoint
                 scope.perform_microtask_checkpoint();   
 
-                Ok(()) 
+                // track any returned promises
+                if v.is_promise() {
+                    let promise = v8::Local::<v8::Promise>::try_from(v)?;
+                    if promise.state() == v8::PromiseState::Rejected {
+                        let error_val = promise.result(scope);
+                        let error_msg = error_val.to_rust_string_lossy(scope);
+                        return Err(error_msg.into());
+                    }
+                    let resp = Self::track_module_promise(scope, promise).ok_or_else(|| format!("Failed to track promise"))?;
+                    return Ok(resp)
+                }
+
+                Ok(None) 
             },
             None => {
                 // perform microtask checkpoint
                 scope.perform_microtask_checkpoint();    
 
                 if let Some(exception) = scope.exception() {
-                    let msg = exception.to_rust_string_lossy(scope);
-                    return Err(format!("Error executing main module: {msg}").into())
+                    let msg = Self::local_to_error(scope, exception);
+                    return Err(msg.into())
                 } else {
                     return Err("Unknown error has occurred".into())
                 }
@@ -320,9 +349,51 @@ impl JsRuntime {
     }
 
     pub async fn execute_main_module_async(&mut self, path: &str) -> Result<(), crate::Error> {
-        self.execute_main_module(path)?;
+        let res = self.execute_main_module(path);
         self.run_event_loop().await;
-        Ok(())
+        match res {
+            Ok(Some(mut rx)) => {
+                if let Some(resp) = rx.recv().await {
+                    match resp {
+                        Ok(_) => {
+                            return Ok(())
+                        }
+                        Err(r) => {
+                            let err = self.global_to_error(r);
+                            return Err(err.into())
+                        }
+                    }
+                }
+
+                Ok(())
+            },
+            Ok(None) => Ok(()),
+            Err(e) => return Err(e)   
+        }
+    }
+
+    /// Tracks a module that is async
+    pub fn track_module_promise<'s>(scope: &mut v8::PinnedRef<'_, v8::TryCatch<'s, '_, v8::HandleScope<'_>>>, promise: v8::Local<'s, v8::Promise>) -> Option<Option<mpsc::UnboundedReceiver<V8Result>>> {
+        if promise.state() == v8::PromiseState::Pending {
+            // if pending, attach a tracker so event loop stays alive, then set module promise then/catch handler
+            let (id, rx) = IsolateState::with_mut(scope, |state| {
+                state.create_module_promise_tracker()
+            });
+
+            let on_module_async_done_fn = v8::Function::builder(on_module_async_done)
+            .data(v8::BigInt::new_from_u64(scope, id).into())
+            .build(scope)?;
+
+            let on_module_async_error_fn = v8::Function::builder(on_module_async_error)
+            .data(v8::BigInt::new_from_u64(scope, id).into())
+            .build(scope)?;
+
+            promise.then2(scope, on_module_async_done_fn, on_module_async_error_fn)?;
+
+            return Some(Some(rx))
+        }
+
+        Some(None)
     }
 
     /// Runs the Tokio event loop until all Promises are resolved
@@ -331,8 +402,7 @@ impl JsRuntime {
             // Check if we have pending promises
             let pending = {
                 v8::scope!(let scope, &mut self.isolate);
-                let state = scope.get_slot::<IsolateState>().unwrap();
-                state.pending_promises
+                IsolateState::with(scope, |state| state.pending_promises())
             };
 
             if pending == 0 {
@@ -346,15 +416,9 @@ impl JsRuntime {
                     let context = v8::Local::new(scope, &self.global_context);
                     let mut context_scope = v8::ContextScope::new(scope, context);
 
-                    let global_resolver_opt = {
-                        let state = context_scope.get_slot_mut::<IsolateState>().unwrap();
-                        let resolver = state.promise_registry.remove(&msg.promise_id);
-                        
-                        if resolver.is_some() {
-                            state.pending_promises -= 1;
-                        }
-                        resolver
-                    }; // state dropped here
+                    let global_resolver_opt = IsolateState::with_mut(&mut context_scope, |state| {
+                        state.promise_registry.remove(&msg.promise_id)
+                    });
 
                     if let Some(global_resolver) = global_resolver_opt {
                         match msg.result {
@@ -378,32 +442,107 @@ impl JsRuntime {
             }
         }
     }
+
+    /// Converts a v8::Global<v8::Value> to an Error
+    fn global_to_error(&mut self, r: v8::Global<v8::Value>) -> String {
+        v8::scope!(let scope, &mut self.isolate);
+        let global_context = v8::Local::new(scope, &self.global_context);
+        let context = v8::Local::new(scope, global_context);
+        let scope = &mut v8::ContextScope::new(scope, context);
+        let r = v8::Local::new(scope, r);
+        Self::local_to_error(scope, r)
+    }
+
+    fn local_to_error<'s>(scope: &mut v8::PinScope<'s, '_>, r: v8::Local<'s, v8::Value>) -> String {
+        if let Some(st) = extract_stack_trace(scope, r) {
+            st
+        } else {
+            r.to_rust_string_lossy(scope)
+        }
+    }
 }
 
+
 /// When the module is done, on_module_async_done will be called
+/// 
+/// This lets us reap the underlying module's result
 fn on_module_async_done<'s>(
     scope: &mut v8::PinScope<'s, '_>,
-    _args: v8::FunctionCallbackArguments<'s>,
+    args: v8::FunctionCallbackArguments<'s>,
     _rv: v8::ReturnValue,
 ) {
     println!("on_module_async_done");
-    let state = scope.get_slot_mut::<IsolateState>().unwrap();
-    state.pending_promises -= 1;
+
+    if args.data().is_big_int() {
+        let n = v8::Local::<v8::BigInt>::try_from(args.data()).unwrap();
+        let module_id = n.u64_value().0;
+
+        IsolateState::with_mut(scope, |state| {
+            if let Some(tx) = state.module_promise_tracker.remove(&module_id) {
+                let _ = tx.send(Ok(()));
+            }
+        });
+    }
+}
+
+/// When the module is error'd, on_module_async_error will be called
+/// 
+/// This lets us reap the underlying module's result
+fn on_module_async_error<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    _rv: v8::ReturnValue,
+) {
+    println!("on_module_async_error");
+
+    if args.data().is_big_int() {
+        let n = v8::Local::<v8::BigInt>::try_from(args.data()).unwrap();
+        let module_id = n.u64_value().0;
+        let error_val = args.get(0);
+        let error_val = v8::Global::new(scope, error_val);
+
+        IsolateState::with_mut(scope, |state| {
+            if let Some(tx) = state.module_promise_tracker.remove(&module_id) {
+                let _ = tx.send(Err(error_val));
+            }
+        });
+    }
 }
 
 // v8 will call this for every promise that has been rejected but unhandled
 pub unsafe extern "C" fn promise_reject_callback(message: v8::PromiseRejectMessage) {
     let cbs = std::pin::pin!(unsafe { v8::CallbackScope::new(&message) });
     let scope = &mut cbs.init();
+
+    // v8 will send a fake 'unhandled' promise to use while evaluating the module (but before any async evaluations)
+    //
+    // ignore those
+    if IsolateState::with_mut(scope, |state| state.is_evaluating_module) {
+        return
+    }
+
     let event = message.get_event();
     
     match event {
         v8::PromiseRejectEvent::PromiseRejectWithNoHandler => {
             let exception = message.get_value().unwrap();
-            let msg = exception.to_rust_string_lossy(scope);
-            eprintln!("UnhandledPromiseRejectionWarning: {}", msg);
+            let err = JsRuntime::local_to_error(scope, exception);
+            eprintln!("UnhandledPromiseRejectionWarning:\n{err}");
             //scope.terminate_execution(); [unsure on this]
         }
         _ => {}
     }
+}
+
+fn extract_stack_trace<'s>(scope: &mut v8::PinScope<'s, '_>, exception: v8::Local<'s, v8::Value>) -> Option<String> {
+    if let Some(obj) = exception.to_object(scope) {
+        let stack_key = v8::String::new(scope, "stack").unwrap();
+        if let Some(stack) = obj.get(scope, stack_key.into()) {
+            if !stack.is_undefined() {
+                return Some(format!("{}", stack.to_rust_string_lossy(scope)));
+            }
+        }
+    }
+
+    return None
 }

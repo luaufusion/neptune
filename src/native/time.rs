@@ -14,7 +14,10 @@ pub struct Ticker {
 impl Ticker {
     /// Creates a new Ticker object
     pub fn new(s: u64) -> Self {
-        Self { timer: tokio::time::interval(Duration::from_secs(s)).into(), start: Instant::now() }
+        let dur = Duration::from_millis(s);
+        let start = Instant::now();
+        let timer = tokio::time::interval_at(start + dur, dur).into();
+        Self { timer, start }
     }
 }
 

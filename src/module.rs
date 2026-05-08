@@ -99,21 +99,15 @@ pub(super) fn module_resolve_callback<'a>(
     // Identify referrer and target path while handling relative paths etc
     let referrer_hash = referrer.get_identity_hash();
 
-    let referrer_path = {
-        let state = scope.get_slot::<IsolateState>()
-            .expect("Fatal: SyncRuntimeState not found in isolate slot");
-
+    let referrer_path = IsolateState::with(scope, |state| {
         state.modules.paths.get(&referrer_hash.into())
         .expect("Fatal: Referrer module not found in ModuleRegistry path tracking")
-        .clone() // Clone to drop the immutable borrow on state
-    };
+        .clone()
+    });
 
-    let target_path = {
-        let state = scope.get_slot::<IsolateState>()
-            .expect("Fatal: SyncRuntimeState not found in isolate slot");
-
+    let target_path = IsolateState::with(scope, |state| {
         match state.modules.resolve_import_path(&specifier_str, &referrer_path) {
-            Ok(path) => path,
+            Ok(path) => Some(path),
             Err(err_msg) => {
                 // FIX: Split into two lines to satisfy the borrow checker
                 let msg = v8::String::new(scope, &err_msg).unwrap();
@@ -122,7 +116,7 @@ pub(super) fn module_resolve_callback<'a>(
                 return None;
             }
         }
-    };
+    })?;
 
     {
         let state = scope.get_slot::<IsolateState>()
@@ -170,14 +164,11 @@ pub(super) fn module_resolve_callback<'a>(
     let hash = module.get_identity_hash();
     let g_mod = v8::Global::new(scope, module);
 
-    {
-        // This is vital! It allows any imports *inside* this new module 
-        // to know their referrer path when this callback fires recursively.
-        let state = scope.get_slot_mut::<IsolateState>()
-            .expect("Fatal: SyncRuntimeState not found in isolate slot");
-
+    // This is vital! It allows any imports *inside* this new module 
+    // to know their referrer path when this callback fires recursively.
+    IsolateState::with_mut(scope, |state| {
         state.modules.cache.insert(target_path.clone(), g_mod);
         state.modules.paths.insert(hash.into(), target_path);
-    }
+    });
     Some(module)
 }
