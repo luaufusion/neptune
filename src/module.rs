@@ -4,25 +4,17 @@ use std::path::{Component, Path};
 use crate::fsw::FilesystemWrapper;
 use crate::runtime::IsolateState;
 
-pub struct ModuleRegistry {
-    cache: HashMap<String, v8::Global<v8::Module>>,
-    paths: HashMap<i32, String>,
-    vfs: FilesystemWrapper
+pub(super) struct ModuleRegistry {
+    pub(super) cache: HashMap<String, v8::Global<v8::Module>>,
+    pub(super) paths: HashMap<i32, String>,
+    pub(super) vfs: FilesystemWrapper
 }
 
 impl ModuleRegistry {
     pub fn new(vfs: FilesystemWrapper) -> Self {
         Self { cache: HashMap::new(), paths: HashMap::new(), vfs }
     }
-    pub fn register<'s>(&mut self, scope: &mut v8::PinScope<'s, '_>, path: String, module: v8::Local<'s, v8::Module>) {
-        let hash = module.get_identity_hash();
-        self.cache.insert(path.clone(), v8::Global::new(scope, module));
-        self.paths.insert(hash.into(), path);
-    }
     
-    pub fn get_cached(&self, path: &str) -> Option<&v8::Global<v8::Module>> { self.cache.get(path) }
-    pub fn get_path(&self, hash: i32) -> Option<&String> { self.paths.get(&hash) }
-
     /// Resolves an import specifier to an absolute VFS path, checking for extensions
     /// given the referrer_path given by referrer_path
     pub fn resolve_import_path(&self, specifier: &str, referrer_path: &str) -> Result<String, String> {
@@ -78,20 +70,21 @@ impl ModuleRegistry {
     }
 }
 
-fn create_module_origin<'s>(
+pub(super) fn create_module_origin<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     filename: &str,
+    is_module: bool
 ) -> v8::ScriptOrigin<'s> {
     let name = v8::String::new(scope, filename).unwrap();
     v8::ScriptOrigin::new(
         scope,
         name.into(),
         0, 0, false, 0, None, false, false,
-        true, None
+        is_module, None
     )
 }
 
-pub fn module_resolve_callback<'a>(
+pub(super) fn module_resolve_callback<'a>(
     context: v8::Local<'a, v8::Context>,
     specifier: v8::Local<'a, v8::String>,
     _import_assertions: v8::Local<'a, v8::FixedArray>,
@@ -160,10 +153,8 @@ pub fn module_resolve_callback<'a>(
     
     // Convert Vec<u8> to a UTF-8 String
     let source_code = String::from_utf8_lossy(&source_bytes).into_owned();
-
-    // 7. Compile the new module
     let code_v8 = v8::String::new(scope, &source_code).unwrap();
-    let origin = create_module_origin(scope, &target_path);
+    let origin = create_module_origin(scope, &target_path, true);
     let mut source = v8::script_compiler::Source::new(code_v8, Some(&origin));
 
     let module = match v8::script_compiler::compile_module(scope, &mut source) {
@@ -175,7 +166,6 @@ pub fn module_resolve_callback<'a>(
             return None; 
         }
     };
-
 
     let hash = module.get_identity_hash();
     let g_mod = v8::Global::new(scope, module);

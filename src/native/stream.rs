@@ -1,7 +1,7 @@
 use tokio::sync::{Mutex, mpsc::{UnboundedReceiver, UnboundedSender}};
 use v8::{cppgc::GarbageCollected};
 
-use crate::{extension::{MethodBuilder, NativeObject, NativeObjectCallbacks}, runtime::Value};
+use crate::{extension::{MethodBuilder, NativeObject, NativeObjectBuilder}, runtime::Value};
 
 pub enum StreamedData {
     Bytes(Vec<u8>),
@@ -39,10 +39,10 @@ impl NativeObject for Stream {
         "Stream"
     }
 
-    fn define_callbacks() -> NativeObjectCallbacks {
-        NativeObjectCallbacks::new_noconstructor()
+    fn bind_methods<'a, 's, 'i>(builder: NativeObjectBuilder) {
+        builder
         .method("send", stream_send)
-        .method("recv", stream_recv)
+        .method("recv", stream_recv);
     }
 }
 
