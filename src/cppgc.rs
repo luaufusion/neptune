@@ -2,7 +2,7 @@
 
 use std::any::TypeId;
 pub use v8::cppgc::GarbageCollected;
-use crate::runtime::IsolateState;
+use crate::state::IsolateState;
 
 const CPPGC_SINGLE_TAG: u16 = 1;
 
@@ -28,10 +28,10 @@ unsafe impl<T: GarbageCollected> v8::cppgc::GarbageCollected
 pub fn make_cppgc_empty_object<'a, 'i, T: GarbageCollected + 'static>(
   scope: &v8::PinScope<'a, 'i>,
 ) -> v8::Local<'a, v8::Object> {
-    // 1. Identify the exact Rust struct we are trying to wrap
+    // Identify the exact Rust struct we are trying to wrap
     let type_id = TypeId::of::<T>();
 
-    // 2. Safely borrow the state to extract the template handles.
+    // Safely borrow the state to extract the template handles.
     // We do this inside a block so the `state` reference is dropped 
     // BEFORE we touch `scope` again to avoid Rust borrow checker errors.
     let (specific_tpl_opt, fallback_tpl) = {
@@ -43,7 +43,7 @@ pub fn make_cppgc_empty_object<'a, 'i, T: GarbageCollected + 'static>(
         (specific, fallback)
     };
 
-    // 3. Create the object based on whether we had a specific template
+    // Create the object based on whether we had a specific template
     match specific_tpl_opt {
         Some(global_function_tpl) => {
             let function_tpl = v8::Local::new(scope, global_function_tpl);

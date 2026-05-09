@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use neptune::{fsw::FilesystemWrapper, native::{console::Console, stream::Stream, time::Ticker}, timer::ItemHandler};
+use neptune::{fsw::FilesystemWrapper, native::{console::Console, stream::Stream, time::{PerformanceGlobals, TimerGlobals}}, timer::ItemHandler};
 use rust_embed::Embed;
 use tokio::runtime::LocalOptions;
 use v8::CreateParams;
@@ -18,20 +18,21 @@ fn main() {
     rt.block_on(async move {
         let mut rt = neptune::runtime::JsRuntime::new(
             CreateParams::default(),
-            Some("--jitless".to_string()),
+            None, //Some("--jitless".to_string()),
             FilesystemWrapper::new(vfs)
         );
         rt.init_class::<Stream>(false);
         rt.init_class::<Console>(true);
-        rt.init_class::<Ticker>(true);
+        rt.register_globals::<TimerGlobals>();
+        rt.register_globals::<PerformanceGlobals>();
 
         println!("Created runtime!");
 
         // Push a RustCall in
-        rt.isolate_state().queue_stream.add(ItemHandler::RustCall { cb: Box::new(|_scope, item| {
+        rt.queue_stream().add(ItemHandler::RustCall { cb: Box::new(|_scope, item| {
             println!("[Rust] RustCall on item {item:?}")
         }) }, Duration::from_secs(2));
-        rt.isolate_state().queue_stream.add(ItemHandler::RustCall { cb: Box::new(|_scope, item| {
+        rt.queue_stream().add(ItemHandler::RustCall { cb: Box::new(|_scope, item| {
             println!("[Rust] RustCall v2 on item {item:?}")
         }) }, Duration::from_secs(5));
 

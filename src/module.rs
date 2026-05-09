@@ -2,9 +2,9 @@ use std::collections::HashMap;
 use std::path::{Component, Path};
 
 use crate::fsw::FilesystemWrapper;
-use crate::runtime::IsolateState;
+use crate::state::IsolateState;
 
-pub(super) struct ModuleRegistry {
+pub struct ModuleRegistry {
     pub(super) cache: HashMap<String, v8::Global<v8::Module>>,
     pub(super) paths: HashMap<i32, String>,
     pub(super) vfs: FilesystemWrapper
@@ -100,13 +100,13 @@ pub(super) fn module_resolve_callback<'a>(
     let referrer_hash = referrer.get_identity_hash();
 
     let referrer_path = IsolateState::with(scope, |state| {
-        state.modules.paths.get(&referrer_hash.into())
+        state.modules().paths.get(&referrer_hash.into())
         .expect("Fatal: Referrer module not found in ModuleRegistry path tracking")
         .clone()
     });
 
     let target_path = IsolateState::with(scope, |state| {
-        match state.modules.resolve_import_path(&specifier_str, &referrer_path) {
+        match state.modules().resolve_import_path(&specifier_str, &referrer_path) {
             Ok(path) => Some(path),
             Err(err_msg) => {
                 // FIX: Split into two lines to satisfy the borrow checker
@@ -123,7 +123,7 @@ pub(super) fn module_resolve_callback<'a>(
             .expect("Fatal: SyncRuntimeState not found in isolate slot");
 
 
-        if let Some(cached) = state.modules.cache.get(&target_path) {
+        if let Some(cached) = state.modules().cache.get(&target_path) {
             return Some(v8::Local::new(scope, cached));
         }
     }
@@ -133,7 +133,7 @@ pub(super) fn module_resolve_callback<'a>(
         let state = scope.get_slot::<IsolateState>()
             .expect("Fatal: SyncRuntimeState not found in isolate slot");
 
-        match state.modules.vfs.get_file(target_path.clone()) {
+        match state.modules().vfs.get_file(target_path.clone()) {
             Ok(bytes) => bytes,
             Err(e) => {
                 // FIX: Split into two lines to satisfy the borrow checker
@@ -167,8 +167,8 @@ pub(super) fn module_resolve_callback<'a>(
     // This is vital! It allows any imports *inside* this new module 
     // to know their referrer path when this callback fires recursively.
     IsolateState::with_mut(scope, |state| {
-        state.modules.cache.insert(target_path.clone(), g_mod);
-        state.modules.paths.insert(hash.into(), target_path);
+        state.modules_mut().cache.insert(target_path.clone(), g_mod);
+        state.modules_mut().paths.insert(hash.into(), target_path);
     });
     Some(module)
 }

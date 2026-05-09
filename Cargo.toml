@@ -12,3 +12,9 @@ vfs = { git = "https://github.com/Anti-Raid/rust-vfs", features = ["embedded-fs"
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 futures = "0.3"
 parking_lot = "0.12.5"
+rand = "0.10.1"
+colored = { version = "3.1.1", optional = true }
+
+[features]
+default = ["console"]
+console = ["dep:colored"]

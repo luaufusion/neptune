@@ -1,6 +1,7 @@
 use std::future::Future;
 use crate::cppgc::{try_unwrap_cppgc_persistent_object, Ref};
-use crate::runtime::{AsyncResult, IsolateState, Value as OpValue};
+use crate::state::{AsyncResult, IsolateState};
+use crate::runtime::{Value as OpValue};
 
 /// An internal builder struct used to define methods on a NativeObject
 pub struct NativeObjectBuilder<'a, 's, 'i> {
@@ -161,8 +162,7 @@ impl MethodBuilder {
                 let global_resolver = v8::Global::new(scope, resolver);
 
                 let (tx, promise_id) = IsolateState::with_mut(scope, |state| {
-                    let id = state.attach_to_scheduler(global_resolver);                    
-                    (state.tx.clone(), id)
+                    state.attach_to_scheduler(global_resolver)           
                 });
                 
                 tokio::task::spawn_local(async move {
@@ -178,5 +178,26 @@ impl MethodBuilder {
                 scope.throw_exception(v8::Exception::type_error(scope, err));
             }
         }
+    }
+}
+
+/// Defines a set of globals
+pub trait Globals {
+    fn register<'s>(scope: &mut v8::PinScope<'s, '_>, global: v8::Local<v8::Object>);
+
+    /// Adds a global to global scope
+    fn add<'s, F>(
+        scope: &mut v8::PinScope<'s, '_>, 
+        global: v8::Local<v8::Object>,
+        name: &str, 
+        callback: F 
+    ) 
+    where
+        F: v8::MapFnTo<v8::FunctionCallback> 
+    {
+        let name = v8::String::new(scope, name).unwrap();
+        let tmpl = v8::FunctionTemplate::new(scope, callback);
+        let val = tmpl.get_function(scope).unwrap();
+        global.set(scope, name.into(), val.into());
     }
 }

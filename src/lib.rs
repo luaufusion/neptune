@@ -2,6 +2,7 @@ pub mod native;
 
 pub mod fsw;
 pub mod runtime;
+pub mod state;
 pub mod timer;
 mod module;
 pub mod buffer;

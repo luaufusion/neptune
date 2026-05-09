@@ -6,7 +6,7 @@ use std::task::{Context, Poll, Waker};
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use crate::runtime::IsolateState;
+use crate::state::IsolateState;
 
 const NUM_LEVELS: usize = 6;
 const MAX_DURATION_UNSIGNED: u64 = (1 << (6 * NUM_LEVELS)) - 1;
@@ -45,7 +45,7 @@ impl ItemHandler {
             },
             Self::RepeatCall { cb, args } => {
                 // Requeue's item handler
-                state.queue_stream.add_with_id(raw.key, Self::RepeatCall {
+                state.queue_stream_mut().add_with_id(raw.key, Self::RepeatCall {
                     cb: cb.clone(),
                     args: args.clone()
                 }, raw.delay);
@@ -130,7 +130,8 @@ impl QueueStream {
 
     /// Clears the QueueStream
     pub fn clear(&mut self) {
-        self.queue.clear()
+        self.queue.clear();
+        self.keys.clear();
     }
 
     /// Length of the QueueStream

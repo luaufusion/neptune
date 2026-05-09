@@ -1,20 +1,14 @@
-use std::{any::TypeId, collections::HashMap};
 use std::sync::Once;
 use futures::StreamExt;
 use tokio::sync::mpsc;
 use v8::{ContextOptions, CreateParams};
 
 use crate::buffer::v8_new_array_buffer;
-use crate::extension::NativeObject;
+use crate::extension::{Globals, NativeObject};
 use crate::fsw::FilesystemWrapper;
-use crate::module::{ModuleRegistry, create_module_origin, module_resolve_callback};
+use crate::module::{create_module_origin, module_resolve_callback};
+use crate::state::{AsyncResult, IsolateState};
 use crate::timer::QueueStream;
-
-/// The message passed from Tokio background tasks back to V8
-pub(super) struct AsyncResult {
-    pub(super) promise_id: usize,
-    pub(super) result: Result<Value, crate::Error>,
-}
 
 pub enum Value {
     Global(v8::Global<v8::Value>),
@@ -63,72 +57,6 @@ impl Value {
 
 type V8Result = Result<(), v8::Global<v8::Value>>;
 
-/// Internal v8 isolate state
-pub struct IsolateState {
-    pub(super) tx: mpsc::UnboundedSender<AsyncResult>,
-    pub(super) promise_registry: HashMap<usize, v8::Global<v8::PromiseResolver>>,
-    pub(super) next_promise_id: usize,
-    pub(super) is_evaluating_module: bool,
-
-
-    // needed for cppgc
-    pub(super) cppgc_fallback_template: v8::Global<v8::ObjectTemplate>,
-    pub(super) cppgc_type_templates: HashMap<TypeId, v8::Global<v8::FunctionTemplate>>,
-
-    // modules
-    pub(super) modules: ModuleRegistry,
-    pub(super) module_promise_tracker: HashMap<u64, mpsc::UnboundedSender<V8Result>>,
-    pub(super) next_module_promise_tracker_id: u64,
-    
-    // timer
-    pub queue_stream: QueueStream
-}
-
-impl std::fmt::Debug for IsolateState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("IsolateState").finish()
-    }
-}
-
-impl IsolateState {
-    /// Run function `f` on the underlying IsolateState (immutable) from scope
-    #[inline(always)]
-    pub(super) fn with<'s, R>(scope: &v8::PinScope<'s, '_, ()>, f: impl FnOnce(&IsolateState) -> R) -> R {
-        let state = scope.get_slot::<Self>().unwrap();
-        f(state)
-    }
-
-    /// Run function `f` on the underlying IsolateState (mutable) from scope
-    #[inline(always)]
-    pub(super) fn with_mut<'s, R>(scope: &mut v8::PinScope<'s, '_, ()>, f: impl FnOnce(&mut IsolateState) -> R) -> R {
-        let state = scope.get_slot_mut::<Self>().unwrap();
-        f(state)
-    }
-
-    /// Attach a promise tracker for a module
-    pub(super) fn create_module_promise_tracker(&mut self) -> (u64, mpsc::UnboundedReceiver<V8Result>) {
-        let nmptid = self.next_module_promise_tracker_id;
-        self.next_module_promise_tracker_id += 1;
-        let (tx, rx) = mpsc::unbounded_channel();
-        self.module_promise_tracker.insert(nmptid, tx);
-        (nmptid, rx)
-    }  
-
-    /// Attach a promise resolver to the scheduler
-    pub(super) fn attach_to_scheduler(&mut self, global_resolver: v8::Global<v8::PromiseResolver>) -> usize {
-        // Get next promise id to use
-        let id = self.next_promise_id;
-        self.next_promise_id += 1;
-        self.promise_registry.insert(id, global_resolver);
-        id
-    }
-
-    /// Returns the number of pending promises
-    pub(super) fn pending_promises(&self) -> usize {
-        self.promise_registry.len() + self.module_promise_tracker.len()
-    }
-}  
-
 // Ensure V8 is only initialized once per process
 static V8_INIT: Once = Once::new();
 
@@ -163,14 +91,7 @@ impl JsRuntime {
         let mut isolate = v8::Isolate::new(params.cpp_heap(cpp_heap));
 
         isolate.set_promise_reject_callback(promise_reject_callback);
-
-        let cppgc_fallback_template = {
-            v8::scope!(let scope, &mut isolate);
-            let tpl = v8::ObjectTemplate::new(scope);
-            // CRITICAL: Must be exactly 2 for cppgc to work
-            tpl.set_internal_field_count(2); 
-            v8::Global::new(scope, tpl)
-        };
+        IsolateState::attach(&mut isolate, tx, vfs);
 
         // Create global context
         let global_context = {
@@ -187,19 +108,6 @@ impl JsRuntime {
             v8::Global::new(scope, context)
         };
 
-        isolate.set_slot(IsolateState {
-            tx,
-            promise_registry: HashMap::new(),
-            next_promise_id: 1,
-            is_evaluating_module: false,
-            cppgc_fallback_template,
-            cppgc_type_templates: HashMap::new(),
-            modules: ModuleRegistry::new(vfs),
-            module_promise_tracker: HashMap::new(),
-            next_module_promise_tracker_id: 0,
-            queue_stream: QueueStream::new()
-        });
-
         Self {
             isolate,
             global_context,
@@ -211,8 +119,8 @@ impl JsRuntime {
         &mut self.isolate
     }
 
-    pub fn isolate_state(&mut self) -> &mut IsolateState {
-        self.isolate.get_slot_mut::<IsolateState>().unwrap()
+    pub fn queue_stream(&mut self) -> &mut QueueStream {
+        self.isolate.get_slot_mut::<IsolateState>().unwrap().queue_stream_mut()
     }
 
     /// Register a NativeObject with the runtime
@@ -241,6 +149,16 @@ impl JsRuntime {
             let constructor_func = template.get_function(scope).unwrap();
             global.set(scope, name_v8.into(), constructor_func.into());
         }
+    }
+
+    /// Register a NativeObject with the runtime
+    pub fn register_globals<T: Globals>(&mut self) {
+        v8::scope!(let scope, &mut self.isolate); 
+        let context = v8::Local::new(scope, &self.global_context);
+        let scope = &mut v8::ContextScope::new(scope, context);
+
+        let global = context.global(scope);
+        T::register(scope, global);
     }
 
     /// Executes synchronous JavaScript code
@@ -283,8 +201,8 @@ impl JsRuntime {
         v8::tc_scope!(let scope, scope);
 
         // Fetch the source code for the main entry point
-        let source_code = IsolateState::with_mut(scope, |state| {
-            match state.modules.vfs.get_file(path.to_string()) {
+        let source_code = IsolateState::with(scope, |state| {
+            match state.modules().vfs.get_file(path.to_string()) {
                 Ok(bytes) => return Ok(String::from_utf8_lossy(&bytes).into_owned()),
                 Err(e) => {
                     return Err(format!("Failed to read main module {}: {:?}", path, e));
@@ -314,8 +232,8 @@ impl JsRuntime {
         let hash = main_module.get_identity_hash();
         let g_mod = v8::Global::new(scope, main_module);
         IsolateState::with_mut(scope, |state| {
-            state.modules.cache.insert(path.to_string(), g_mod);
-            state.modules.paths.insert(hash.into(), path.to_string());
+            state.modules_mut().cache.insert(path.to_string(), g_mod);
+            state.modules_mut().paths.insert(hash.into(), path.to_string());
         });
 
         // Instantiate the module graph
@@ -330,9 +248,7 @@ impl JsRuntime {
         }
 
         // Execute the code
-        IsolateState::with_mut(scope, |s| s.is_evaluating_module = true);
         let eval_result = main_module.evaluate(scope);
-        IsolateState::with_mut(scope, |s| s.is_evaluating_module = false);
 
         match eval_result {
             Some(v) => {
@@ -370,7 +286,7 @@ impl JsRuntime {
 
     pub async fn execute_main_module_async(&mut self, path: &str) -> Result<(), crate::Error> {
         let res = self.execute_main_module(path);
-        self.run_event_loop().await;
+        self.run_event_loop().await?;
         match res {
             Ok(Some(mut rx)) => {
                 if let Some(resp) = rx.recv().await {
@@ -417,16 +333,25 @@ impl JsRuntime {
     }
 
     /// Runs the Tokio event loop until all Promises are resolved
-    pub async fn run_event_loop(&mut self) {
+    pub async fn run_event_loop(&mut self) -> Result<(), crate::Error> {
         loop {
             // Check if we have pending promises
-            let pending = {
+            let (pending, pending_mods, pending_work_units) = {
                 v8::scope!(let scope, &mut self.isolate);
-                IsolateState::with(scope, |state| state.pending_promises())
+                IsolateState::with(scope, |state| {
+                    (state.pending_promises(), state.pending_module_promises(), state.pending_work_units())
+                })
             };
 
+            // Heuristic error: if we're currently evaluating a module but have no pending primises
+            if pending_mods > 0 && pending_work_units == 0 {
+                v8::scope!(let scope, &mut self.isolate);
+                Self::error(scope, &format!("Top-level await promise never resolved"));
+                return Err("event loop detected deadlock".into())
+            }
+
             if pending == 0 {
-                break; // Exit loop when all async work is done
+                break Ok(()); // Exit loop when all async work is done
             }
 
             tokio::select! {
@@ -438,7 +363,7 @@ impl JsRuntime {
                             let mut context_scope = v8::ContextScope::new(scope, context);
 
                             let global_resolver_opt = IsolateState::with_mut(&mut context_scope, |state| {
-                                state.promise_registry.remove(&msg.promise_id)
+                                state.detach_from_scheduler(msg.promise_id)
                             });
 
                             if let Some(global_resolver) = global_resolver_opt {
@@ -460,11 +385,11 @@ impl JsRuntime {
                             }
  
                         }
-                        None => break,
+                        None => break Ok(()),
                     }
                 }
                 Some(item) = async { 
-                    self.isolate.get_slot_mut::<IsolateState>().unwrap().queue_stream.next().await 
+                    self.isolate.get_slot_mut::<IsolateState>().unwrap().queue_stream_mut().next().await 
                 } => {
                     v8::scope!(let scope, &mut self.isolate);
                     let context = v8::Local::new(scope, &self.global_context);
@@ -492,6 +417,15 @@ impl JsRuntime {
             r.to_rust_string_lossy(scope)
         }
     }
+
+    // Handle an error message
+    pub fn error<'s>(_scope: &mut v8::PinScope<'s, '_, ()>, msg: &str) {
+        #[cfg(feature = "console")]
+        {
+            use colored::*;
+            eprintln!("{}: {msg}", "error".red().bold());
+        }
+    }
 }
 
 
@@ -510,7 +444,7 @@ fn on_module_async_done<'s>(
         let module_id = n.u64_value().0;
 
         IsolateState::with_mut(scope, |state| {
-            if let Some(tx) = state.module_promise_tracker.remove(&module_id) {
+            if let Some(tx) = state.remove_module_promise_tracker(module_id) {
                 let _ = tx.send(Ok(()));
             }
         });
@@ -534,7 +468,7 @@ fn on_module_async_error<'s>(
         let error_val = v8::Global::new(scope, error_val);
 
         IsolateState::with_mut(scope, |state| {
-            if let Some(tx) = state.module_promise_tracker.remove(&module_id) {
+            if let Some(tx) = state.remove_module_promise_tracker(module_id) {
                 let _ = tx.send(Err(error_val));
             }
         });
@@ -546,20 +480,13 @@ pub unsafe extern "C" fn promise_reject_callback(message: v8::PromiseRejectMessa
     let cbs = std::pin::pin!(unsafe { v8::CallbackScope::new(&message) });
     let scope = &mut cbs.init();
 
-    // v8 will send a fake 'unhandled' promise to use while evaluating the module (but before any async evaluations)
-    //
-    // ignore those
-    if IsolateState::with_mut(scope, |state| state.is_evaluating_module) {
-        return
-    }
-
     let event = message.get_event();
     
     match event {
         v8::PromiseRejectEvent::PromiseRejectWithNoHandler => {
             let exception = message.get_value().unwrap();
             let err = JsRuntime::local_to_error(scope, exception);
-            eprintln!("UnhandledPromiseRejectionWarning:\n{err}");
+            JsRuntime::error(scope, &format!("Uncaught (in promise) {err}\n"));
             //scope.terminate_execution(); [unsure on this]
         }
         _ => {}
