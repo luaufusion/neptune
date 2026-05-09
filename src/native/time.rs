@@ -39,7 +39,7 @@ impl NativeObject for Ticker {
     fn constructor<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, _retval: v8::ReturnValue) {
         let arg0 = args.get(0);
         let Some(n) = arg0.to_number(scope) else {
-            let msg = v8::String::new(scope, "first argument must be number of seconds to tick at").unwrap();
+            let msg = v8::String::new(scope, "first argument must be number of milliseconds to tick at").unwrap();
             let exception = v8::Exception::type_error(scope, msg);
             scope.throw_exception(exception);   
             return;
@@ -70,7 +70,7 @@ fn ticker_tick<'s>(
                 let mut ticker = bridge.timer.lock().await;
                 let t = ticker.tick().await;
                 let elapsed = t - bridge.start;
-                Ok(Value::F64(elapsed.as_secs_f64()))
+                Ok(Value::F64(elapsed.as_secs_f64()*1000.0))
             })
         },
     );

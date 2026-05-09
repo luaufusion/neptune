@@ -1,4 +1,6 @@
-use neptune::{fsw::FilesystemWrapper, native::{console::Console, stream::Stream, time::Ticker}};
+use std::time::Duration;
+
+use neptune::{fsw::FilesystemWrapper, native::{console::Console, stream::Stream, time::Ticker}, timer::ItemHandler};
 use rust_embed::Embed;
 use tokio::runtime::LocalOptions;
 use v8::CreateParams;
@@ -24,6 +26,15 @@ fn main() {
         rt.init_class::<Ticker>(true);
 
         println!("Created runtime!");
+
+        // Push a RustCall in
+        rt.isolate_state().queue_stream.add(ItemHandler::RustCall { cb: Box::new(|_scope, item| {
+            println!("[Rust] RustCall on item {item:?}")
+        }) }, Duration::from_secs(2));
+        rt.isolate_state().queue_stream.add(ItemHandler::RustCall { cb: Box::new(|_scope, item| {
+            println!("[Rust] RustCall v2 on item {item:?}")
+        }) }, Duration::from_secs(5));
+
 
         if let Err(e) = rt.execute("let _c = new Console(); globalThis.console = _c; console.log(console)") {
             eprintln!("{e}");

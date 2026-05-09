@@ -6,6 +6,9 @@ edition = "2024"
 [dependencies]
 v8 = { git = "https://github.com/luaufusion/rusty_v8", default-features = false, features = ["v8_enable_sandbox"], branch = "luaufusion" }
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["time"] }
 serde = "1.0.228"
 vfs = { git = "https://github.com/Anti-Raid/rust-vfs", features = ["embedded-fs"] } # TODO: switch to a mluau fork soon
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
+futures = "0.3"
+parking_lot = "0.12.5"

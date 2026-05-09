@@ -1,5 +1,6 @@
 use std::{any::TypeId, collections::HashMap};
 use std::sync::Once;
+use futures::StreamExt;
 use tokio::sync::mpsc;
 use v8::{ContextOptions, CreateParams};
 
@@ -7,6 +8,7 @@ use crate::buffer::v8_new_array_buffer;
 use crate::extension::NativeObject;
 use crate::fsw::FilesystemWrapper;
 use crate::module::{ModuleRegistry, create_module_origin, module_resolve_callback};
+use crate::timer::QueueStream;
 
 /// The message passed from Tokio background tasks back to V8
 pub(super) struct AsyncResult {
@@ -62,7 +64,7 @@ impl Value {
 type V8Result = Result<(), v8::Global<v8::Value>>;
 
 /// Internal v8 isolate state
-pub(super) struct IsolateState {
+pub struct IsolateState {
     pub(super) tx: mpsc::UnboundedSender<AsyncResult>,
     pub(super) promise_registry: HashMap<usize, v8::Global<v8::PromiseResolver>>,
     pub(super) next_promise_id: usize,
@@ -77,6 +79,15 @@ pub(super) struct IsolateState {
     pub(super) modules: ModuleRegistry,
     pub(super) module_promise_tracker: HashMap<u64, mpsc::UnboundedSender<V8Result>>,
     pub(super) next_module_promise_tracker_id: u64,
+    
+    // timer
+    pub queue_stream: QueueStream
+}
+
+impl std::fmt::Debug for IsolateState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IsolateState").finish()
+    }
 }
 
 impl IsolateState {
@@ -185,7 +196,8 @@ impl JsRuntime {
             cppgc_type_templates: HashMap::new(),
             modules: ModuleRegistry::new(vfs),
             module_promise_tracker: HashMap::new(),
-            next_module_promise_tracker_id: 0
+            next_module_promise_tracker_id: 0,
+            queue_stream: QueueStream::new()
         });
 
         Self {
@@ -193,6 +205,14 @@ impl JsRuntime {
             global_context,
             rx,
         }
+    }
+
+    pub fn isolate(&mut self) -> &mut v8::Isolate {
+        &mut self.isolate
+    }
+
+    pub fn isolate_state(&mut self) -> &mut IsolateState {
+        self.isolate.get_slot_mut::<IsolateState>().unwrap()
     }
 
     /// Register a NativeObject with the runtime
@@ -409,36 +429,48 @@ impl JsRuntime {
                 break; // Exit loop when all async work is done
             }
 
-            // wait for bg task to complete
-            match self.rx.recv().await {
-                Some(msg) => {
+            tokio::select! {
+                msg = self.rx.recv() => {
+                    match msg {
+                        Some(msg) => {
+                            v8::scope!(let scope, &mut self.isolate);
+                            let context = v8::Local::new(scope, &self.global_context);
+                            let mut context_scope = v8::ContextScope::new(scope, context);
+
+                            let global_resolver_opt = IsolateState::with_mut(&mut context_scope, |state| {
+                                state.promise_registry.remove(&msg.promise_id)
+                            });
+
+                            if let Some(global_resolver) = global_resolver_opt {
+                                match msg.result {
+                                    Ok(msg) => {
+                                        let resolver = v8::Local::new(&mut context_scope, global_resolver);
+                                        let v8_result = msg.to_v8(&mut context_scope);
+                                        resolver.resolve(&mut context_scope, v8_result.into());
+                                    }
+                                    Err(e) => {
+                                        let resolver = v8::Local::new(&mut context_scope, global_resolver);
+                                        let v8_result = v8::String::new(&mut context_scope, &e.to_string()).unwrap();
+                                        resolver.reject(&mut context_scope, v8_result.into());
+                                    }
+                                }
+
+                                // Pump the microtask queue
+                                context_scope.perform_microtask_checkpoint();
+                            }
+ 
+                        }
+                        None => break,
+                    }
+                }
+                Some(item) = async { 
+                    self.isolate.get_slot_mut::<IsolateState>().unwrap().queue_stream.next().await 
+                } => {
                     v8::scope!(let scope, &mut self.isolate);
                     let context = v8::Local::new(scope, &self.global_context);
                     let mut context_scope = v8::ContextScope::new(scope, context);
-
-                    let global_resolver_opt = IsolateState::with_mut(&mut context_scope, |state| {
-                        state.promise_registry.remove(&msg.promise_id)
-                    });
-
-                    if let Some(global_resolver) = global_resolver_opt {
-                        match msg.result {
-                            Ok(msg) => {
-                                let resolver = v8::Local::new(&mut context_scope, global_resolver);
-                                let v8_result = msg.to_v8(&mut context_scope);
-                                resolver.resolve(&mut context_scope, v8_result.into());
-                            }
-                            Err(e) => {
-                                let resolver = v8::Local::new(&mut context_scope, global_resolver);
-                                let v8_result = v8::String::new(&mut context_scope, &e.to_string()).unwrap();
-                                resolver.reject(&mut context_scope, v8_result.into());
-                            }
-                        }
-
-                        // Pump the microtask queue
-                        context_scope.perform_microtask_checkpoint();
-                    }
+                    item.handler.handle(&mut context_scope, item.raw);
                 }
-                None => break
             }
         }
     }
