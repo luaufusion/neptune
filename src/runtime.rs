@@ -58,15 +58,31 @@ impl Value {
 type V8Result = Result<(), v8::Global<v8::Value>>;
 
 // Ensure V8 is only initialized once per process
-static V8_INIT: Once = Once::new();
+pub(super) static V8_INIT: Once = Once::new();
 
+/// A JsRuntime
 pub struct JsRuntime {
-    isolate: v8::OwnedIsolate,
-    global_context: v8::Global<v8::Context>,
-    rx: mpsc::UnboundedReceiver<AsyncResult>,
+    pub(super) isolate: v8::OwnedIsolate,
+    pub(super) global_context: v8::Global<v8::Context>,
+    pub(super) rx: mpsc::UnboundedReceiver<AsyncResult>,
 }
 
 impl JsRuntime {
+    #[inline(always)]
+    pub(super) fn create_global_context(isolate: &mut v8::Isolate) -> v8::Global<v8::Context> {
+        v8::scope!(let scope, isolate);
+        
+        // Create a template for the global object (`window` / `globalThis`)
+        let global_template = v8::ObjectTemplate::new(scope);
+
+        // Instantiate the context
+        let context = v8::Context::new(scope, ContextOptions {
+            global_template: Some(global_template),
+            ..Default::default()
+        });
+        v8::Global::new(scope, context)
+    }
+
     pub fn new(params: CreateParams, flags: Option<String>, vfs: FilesystemWrapper) -> Self {
         // Init v8 platform if needed
         V8_INIT.call_once(|| {
@@ -94,19 +110,7 @@ impl JsRuntime {
         IsolateState::attach(&mut isolate, tx, vfs);
 
         // Create global context
-        let global_context = {
-            v8::scope!(let scope, &mut isolate);
-            
-            // Create a template for the global object (`window` / `globalThis`)
-            let global_template = v8::ObjectTemplate::new(scope);
-
-            // Instantiate the context
-            let context = v8::Context::new(scope, ContextOptions {
-                global_template: Some(global_template),
-                ..Default::default()
-            });
-            v8::Global::new(scope, context)
-        };
+        let global_context = Self::create_global_context(&mut isolate);
 
         Self {
             isolate,

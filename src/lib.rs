@@ -8,5 +8,6 @@ mod module;
 pub mod buffer;
 pub mod cppgc;
 pub mod extension;
+pub mod runtime_snapshotter;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;

@@ -201,3 +201,7 @@ pub trait Globals {
         global.set(scope, name.into(), val.into());
     }
 }
+
+pub trait SnapshottableGlobals: Globals {
+    fn get_external_references() -> Vec<v8::FunctionCallback>;
+}

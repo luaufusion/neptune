@@ -3,7 +3,7 @@ use std::time::Duration;
 use neptune::{fsw::FilesystemWrapper, native::{console::Console, stream::Stream, time::{PerformanceGlobals, TimerGlobals}}, timer::ItemHandler};
 use rust_embed::Embed;
 use tokio::runtime::LocalOptions;
-use v8::CreateParams;
+use v8::{ContextOptions, CreateParams};
 
 #[derive(Embed, Debug)]
 #[folder = "$CARGO_MANIFEST_DIR/test/a"]
@@ -16,6 +16,58 @@ fn main() {
     let vfs = vfs::EmbeddedFS::<Test>::new();
 
     rt.block_on(async move {
+        {
+            // Snapshotting test
+            let mut snap_rt = neptune::runtime_snapshotter::JsRuntimeSnapshotter::new(
+                CreateParams::default(),
+                None
+            );
+            snap_rt.register_globals::<TimerGlobals>();
+            snap_rt.register_globals::<PerformanceGlobals>();
+
+            let ext_refs = snap_rt.ext_refs(); 
+            let blob = snap_rt.finalize(v8::FunctionCodeHandling::Clear, Some(r#"
+globalThis.SUCCESS = 132
+
+class Ticker {
+    constructor(n) {
+        this.n = n
+        this.timerId = null;
+    }
+
+    async tick() {
+        return new Promise((resolve) => {
+            this.timerId = setTimeout(resolve, this.n, 123);
+        });
+    }
+
+    stop() {
+        if (this.timerId) {
+            clearTimeout(this.timerId);
+            this.timerId = null;
+        }
+    }
+}
+"#));
+
+            // Load it back
+            let params = v8::Isolate::create_params()
+            .snapshot_blob(blob)
+            .external_references(ext_refs.into());
+            let mut isolate = v8::Isolate::new(params);
+            v8::scope!(let scope, &mut isolate);
+            let context = v8::Context::new(scope, ContextOptions::default());
+            let mut scope = v8::ContextScope::new(scope, context);
+
+            // Check if the baked variable exists
+            let code = v8::String::new(&mut scope, "SUCCESS").unwrap();
+            let script = v8::Script::compile(&mut scope, code, None).unwrap();
+            let result = script.run(&mut scope).unwrap();
+
+            assert_eq!(result.to_rust_string_lossy(&mut scope), "132");
+            println!("Snapshot test verified!");
+        }
+
         let mut rt = neptune::runtime::JsRuntime::new(
             CreateParams::default(),
             None, //Some("--jitless".to_string()),
