@@ -6,3 +6,4 @@ Neptune is the work-in-progress experimental JS runtime for cases that need stri
 
 - `setTimeout` / `setInterval` / `clearTimeout` / `clearInterval`
 - `console.log` (only basic logging, rest of Console API is WIP)
+- `structuredClone` (partial, DOMException not yet supported)

@@ -1,8 +1,8 @@
 // Base test =================
 import * as a from "./b.js"
 console.log("GO", Reflect, eval)
-console.log(Uint8Array)
-
+console.log(Uint8Array, structuredClone)
+console.log({a:1}, structuredClone({a:1}))
 // Timer test ================
 class Ticker {
     constructor(n) {

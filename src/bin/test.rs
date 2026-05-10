@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use neptune::{fsw::FilesystemWrapper, native::{console::Console, stream::Stream, time::{PerformanceGlobals, TimerGlobals}}, timer::ItemHandler};
+use neptune::{fsw::FilesystemWrapper, native::{console::Console, stream::Stream, time::{PerformanceGlobals, TimerGlobals}, web::StructuredCloneGlobals}, timer::ItemHandler};
 use rust_embed::Embed;
 use tokio::runtime::LocalOptions;
 use v8::{ContextOptions, CreateParams};
@@ -24,6 +24,7 @@ fn main() {
             );
             snap_rt.register_globals::<TimerGlobals>();
             snap_rt.register_globals::<PerformanceGlobals>();
+            snap_rt.register_globals::<StructuredCloneGlobals>();
 
             let ext_refs = snap_rt.ext_refs(); 
             let blob = snap_rt.finalize(Some(r#"
@@ -77,6 +78,7 @@ class Ticker {
         rt.init_class::<Console>(true);
         rt.register_globals::<TimerGlobals>();
         rt.register_globals::<PerformanceGlobals>();
+        rt.register_globals::<StructuredCloneGlobals>();
 
         println!("Created runtime!");
 
