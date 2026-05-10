@@ -1,4 +1,4 @@
-const load = (files, fileorder) => {
+((files, fileorder) => {
     /** @type {{[modname: string]: string}} */
     const internalSources = JSON.parse(files)
     /** @type {string[]} */
@@ -40,6 +40,4 @@ const load = (files, fileorder) => {
     };
 
     fileOrder.forEach(modId => internalRequire(modId));
-}
-
-return load
+})

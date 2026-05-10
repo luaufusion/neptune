@@ -1,6 +1,6 @@
 use v8::MapFnTo;
 
-use crate::{extension::{Globals, SnapshottableGlobals}, state::IsolateState, timer::ItemHandler};
+use crate::{extension::Globals, state::IsolateState, timer::ItemHandler};
 
 fn set_timeout<'s>(
     scope: &mut v8::PinScope<'s, '_>, 
@@ -100,9 +100,7 @@ impl Globals for TimerGlobals {
         Self::add(scope, global, "clearInterval", clear_timer);
         Self::add(scope, global, "clearTimeout", clear_timer);
     }
-}
 
-impl SnapshottableGlobals for TimerGlobals {
     fn get_external_references() -> Vec<v8::FunctionCallback> {
         vec![set_timeout.map_fn_to(), set_interval.map_fn_to(), clear_timer.map_fn_to(), clear_timer.map_fn_to()]
     }
@@ -130,9 +128,7 @@ impl Globals for PerformanceGlobals {
         performance_obj.set(scope, now_key.into(), now_tmpl.get_function(scope).unwrap().into());
         global.set(scope, performance_key.into(), performance_obj.into());
     }
-}
 
-impl SnapshottableGlobals for PerformanceGlobals {
     fn get_external_references() -> Vec<v8::FunctionCallback> {
         vec![performance_now.map_fn_to()]
     }

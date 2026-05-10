@@ -26,7 +26,7 @@ fn main() {
             snap_rt.register_globals::<PerformanceGlobals>();
 
             let ext_refs = snap_rt.ext_refs(); 
-            let blob = snap_rt.finalize(v8::FunctionCodeHandling::Clear, Some(r#"
+            let blob = snap_rt.finalize(Some(r#"
 globalThis.SUCCESS = 132
 
 class Ticker {

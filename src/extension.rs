@@ -185,6 +185,9 @@ impl MethodBuilder {
 pub trait Globals {
     fn register<'s>(scope: &mut v8::PinScope<'s, '_>, global: v8::Local<v8::Object>);
 
+    /// Any external references needed for snapshotting
+    fn get_external_references() -> Vec<v8::FunctionCallback>;
+
     /// Adds a global to global scope
     fn add<'s, F>(
         scope: &mut v8::PinScope<'s, '_>, 
@@ -202,6 +205,5 @@ pub trait Globals {
     }
 }
 
-pub trait SnapshottableGlobals: Globals {
-    fn get_external_references() -> Vec<v8::FunctionCallback>;
-}
+/// Javascript blob
+pub struct JsBlob {}
