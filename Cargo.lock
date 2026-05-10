@@ -699,6 +699,7 @@ dependencies = [
  "rand",
  "rust-embed",
  "serde",
+ "serde_json",
  "tokio",
  "tokio-util",
  "v8",

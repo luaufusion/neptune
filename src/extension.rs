@@ -68,7 +68,7 @@ pub trait NativeObject: v8::cppgc::GarbageCollected + Sized + 'static {
     ) {
         // Ensure this is actually in a constructor
         if !args.is_construct_call() {
-            let msg = v8::String::new(scope, &format!("Constructor {} requires 'new'", Self::class_name())).unwrap();
+            let msg = v8::String::new(scope, &format!("Class constructor {} cannot be invoked without 'new'", Self::class_name())).unwrap();
             let exception = v8::Exception::type_error(scope, msg);
             scope.throw_exception(exception);
             return;

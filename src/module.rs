@@ -119,8 +119,7 @@ pub(super) fn module_resolve_callback<'a>(
     })?;
 
     {
-        let state = scope.get_slot::<IsolateState>()
-            .expect("Fatal: SyncRuntimeState not found in isolate slot");
+        let state = scope.get_slot::<IsolateState>()?;
 
 
         if let Some(cached) = state.modules().cache.get(&target_path) {
@@ -130,8 +129,7 @@ pub(super) fn module_resolve_callback<'a>(
 
     // slow-path
     let source_bytes = {
-        let state = scope.get_slot::<IsolateState>()
-            .expect("Fatal: SyncRuntimeState not found in isolate slot");
+        let state = scope.get_slot::<IsolateState>()?;
 
         match state.modules().vfs.get_file(target_path.clone()) {
             Ok(bytes) => bytes,

@@ -1,6 +1,6 @@
 // Base test =================
 import * as a from "./b.js"
-console.log("GO")
+console.log("GO", Reflect, eval)
 console.log(Uint8Array)
 
 // Timer test ================
