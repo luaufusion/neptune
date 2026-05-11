@@ -1,7 +1,7 @@
 use std::{any::TypeId, cell::Cell, collections::HashMap};
 
-use tokio::sync::mpsc;
-use crate::{fsw::FilesystemWrapper, module::ModuleRegistry, runtime::Value, timer::QueueStream};
+use tokio::sync::{mpsc, oneshot};
+use crate::{fsw::FilesystemWrapper, module::ModuleRegistry, runtime::{PipedMessage, Value}, timer::QueueStream};
 pub type V8Result = Result<(), v8::Global<v8::Value>>;
 
 /// The message passed from Tokio background tasks back to V8
@@ -16,6 +16,7 @@ pub struct AsyncResult {
 /// 
 /// Internal to Neptune and is subject to change at any time
 pub struct IsolateState {
+    // scheduler
     tx: mpsc::UnboundedSender<AsyncResult>,
     promise_registry: HashMap<usize, v8::Global<v8::PromiseResolver>>,
     next_promise_id: usize,
@@ -26,15 +27,20 @@ pub struct IsolateState {
 
     // modules
     modules: ModuleRegistry,
-    module_promise_tracker: HashMap<u64, mpsc::UnboundedSender<V8Result>>,
+    module_promise_tracker: HashMap<u64, oneshot::Sender<V8Result>>,
     next_module_promise_tracker_id: u64,
     
     // timer
     queue_stream: QueueStream,
 
     start_time: std::time::Instant,
+
     // Ensures monotonicity
     last_reported_time: Cell<f64>,
+
+    // embedder pipe
+    pub(super) worker_to_embedder_cb: Option<Box<dyn FnMut(PipedMessage)>>,
+    pub(super) embedder_to_worker_cb: Option<v8::Global<v8::Function>>,
 }
 
 impl std::fmt::Debug for IsolateState {
@@ -68,6 +74,8 @@ impl IsolateState {
             queue_stream: QueueStream::new(),
             start_time: std::time::Instant::now(),
             last_reported_time: Cell::new(0.0),
+            worker_to_embedder_cb: None,
+            embedder_to_worker_cb: None,
         });
     }
 
@@ -89,16 +97,16 @@ impl IsolateState {
     /// 
     /// Returns the module id
     #[inline(always)]
-    pub fn create_module_promise_tracker(&mut self) -> (u64, mpsc::UnboundedReceiver<V8Result>) {
+    pub fn create_module_promise_tracker(&mut self) -> (u64, oneshot::Receiver<V8Result>) {
         let nmptid = self.next_module_promise_tracker_id;
         self.next_module_promise_tracker_id += 1;
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = oneshot::channel();
         self.module_promise_tracker.insert(nmptid, tx);
         (nmptid, rx)
     }  
 
     /// Removes a promise tracker for a module given module id from `create_module_promise_tracker`
-    pub fn remove_module_promise_tracker(&mut self, module_id: u64) -> Option<mpsc::UnboundedSender<V8Result>> {
+    pub fn remove_module_promise_tracker(&mut self, module_id: u64) -> Option<oneshot::Sender<V8Result>> {
         self.module_promise_tracker.remove(&module_id)
     }
 
@@ -118,9 +126,13 @@ impl IsolateState {
         self.promise_registry.remove(&promise_id)
     }
 
-    /// Returns the number of pending promises
-    pub fn pending_promises(&self) -> usize {
-        self.promise_registry.len() + self.module_promise_tracker.len()
+    /// Returns the number of pending loop refs (if loop refs > 0, the event loop will continue to wait for events and not break)
+    pub fn pending_loop(&self) -> usize {
+        let mut base = self.promise_registry.len() + self.module_promise_tracker.len();
+        if self.worker_to_embedder_cb.is_some() && self.embedder_to_worker_cb.is_some() {
+            base += 1; // the worker to embedder pipe thats defined by the embedder creates a ref that keeps the event loop going
+        }
+        base
     }
 
     /// Returns the number of 'work units' we have in motion

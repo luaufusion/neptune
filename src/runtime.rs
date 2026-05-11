@@ -1,6 +1,7 @@
 use std::sync::Once;
 use futures::StreamExt;
-use tokio::sync::mpsc;
+use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot};
 use v8::{ContextOptions, CreateParams};
 
 use crate::buffer::v8_new_array_buffer;
@@ -9,6 +10,14 @@ use crate::fsw::FilesystemWrapper;
 use crate::module::{create_module_origin, module_resolve_callback};
 use crate::state::{AsyncResult, IsolateState};
 use crate::timer::QueueStream;
+
+#[derive(Debug, Serialize, Deserialize, PartialEq)]
+pub enum PipedMessage {
+    /// Isolate posted bytes
+    PostedBytes(Vec<u8>),
+    /// Isolate posted a string
+    PostedString(String),
+}
 
 pub enum Value {
     Global(v8::Global<v8::Value>),
@@ -127,6 +136,49 @@ impl JsRuntime {
         self.isolate.get_slot_mut::<IsolateState>().unwrap().queue_stream_mut()
     }
 
+    /// Set the callback to call when the worker posts a message for the embedder to see
+    pub fn set_worker_to_embedder_cb(&mut self, cb: Option<Box<dyn FnMut(PipedMessage)>>) {
+        let iso_state = self.isolate.get_slot_mut::<IsolateState>().unwrap();
+        iso_state.worker_to_embedder_cb = cb;
+    }
+
+    /// Set the callback to call when the embedder posts a message for the worker to see
+    pub fn set_embedder_to_worker_cb(&mut self, cb: Option<v8::Global<v8::Function>>) {
+        let iso_state = self.isolate.get_slot_mut::<IsolateState>().unwrap();
+        iso_state.embedder_to_worker_cb = cb;
+    }
+
+    /// Push a message for the worker to see, does nothing if theres no embedder_to_worker callback
+    pub fn push_message(&mut self, msg: PipedMessage) -> Result<(), crate::Error> {
+        let iso_state = self.isolate.get_slot_mut::<IsolateState>().unwrap();
+        if let Some(cb) = iso_state.embedder_to_worker_cb.clone() {
+            v8::scope!(let scope, &mut self.isolate);
+            let global_context = v8::Local::new(scope, &self.global_context);
+            let context = v8::Local::new(scope, global_context);
+            let scope = &mut v8::ContextScope::new(scope, context);
+            v8::tc_scope!(let scope, scope);
+            let cb = v8::Local::new(scope, cb);
+            let args = match msg {
+                PipedMessage::PostedBytes(buf) => v8_new_array_buffer(scope, &buf, buf.len()).into(),
+                PipedMessage::PostedString(s) => v8::String::new(scope, &s).unwrap().into()
+            };
+            let v = cb.call(scope, v8::undefined(scope).into(), &[args]);
+            scope.perform_microtask_checkpoint(); // perform microtask checkpoint
+            if v.is_none() {
+                if let Some(exception) = scope.exception() {
+                    let msg = exception.to_rust_string_lossy(scope);
+                    
+                    return Err(format!("Failed to compile: {msg}").into())
+                } else {
+                    return Err("Unknown error has occurred".into())
+                } 
+            }
+            Ok(())
+        } else {
+            Ok(())
+        }
+    }
+
     /// Register a NativeObject with the runtime
     pub fn init_class<T: NativeObject>(&mut self, expose: bool) {
         let global_template = {
@@ -197,7 +249,7 @@ impl JsRuntime {
         Ok(())
     }
 
-    pub fn execute_main_module(&mut self, path: &str) -> Result<Option<mpsc::UnboundedReceiver<V8Result>>, crate::Error> {
+    pub fn execute_main_module(&mut self, path: &str) -> Result<oneshot::Receiver<V8Result>, crate::Error> {
         v8::scope!(let scope, &mut self.isolate);
         let global_context = v8::Local::new(scope, &self.global_context);
         let context = v8::Local::new(scope, global_context);
@@ -254,7 +306,7 @@ impl JsRuntime {
         // Execute the code
         let eval_result = main_module.evaluate(scope);
 
-        match eval_result {
+        let rx_optional = match eval_result {
             Some(v) => {
                 // perform microtask checkpoint
                 scope.perform_microtask_checkpoint();   
@@ -267,11 +319,11 @@ impl JsRuntime {
                         let error_msg = error_val.to_rust_string_lossy(scope);
                         return Err(error_msg.into());
                     }
-                    let resp = Self::track_module_promise(scope, promise).ok_or_else(|| format!("Failed to track promise"))?;
-                    return Ok(resp)
+                    let resp: Option<oneshot::Receiver<Result<(), v8::Global<v8::Value>>>> = Self::track_module_promise(scope, promise).ok_or_else(|| format!("Failed to track promise"))?;
+                    resp
+                } else {
+                    None
                 }
-
-                Ok(None) 
             },
             None => {
                 // perform microtask checkpoint
@@ -284,36 +336,33 @@ impl JsRuntime {
                     return Err("Unknown error has occurred".into())
                 }
             }
+        };
 
+        match rx_optional {
+            Some(rx) => Ok(rx),
+            None => {
+                let (tx, rx) = oneshot::channel();
+                let _ = tx.send(Ok(()));
+                Ok(rx)
+            }
         }
     }
 
-    pub async fn execute_main_module_async(&mut self, path: &str) -> Result<(), crate::Error> {
-        let res = self.execute_main_module(path);
-        self.run_event_loop().await?;
-        match res {
-            Ok(Some(mut rx)) => {
-                if let Some(resp) = rx.recv().await {
-                    match resp {
-                        Ok(_) => {
-                            return Ok(())
-                        }
-                        Err(r) => {
-                            let err = self.global_to_error(r);
-                            return Err(err.into())
-                        }
-                    }
-                }
-
-                Ok(())
-            },
-            Ok(None) => Ok(()),
-            Err(e) => return Err(e)   
+    /// Helper method to parse the module response for you as this is such a common thing to do
+    pub fn parse_module_resp(&mut self, resp: Result<(), v8::Global<v8::Value>>) -> Result<(), crate::Error> {
+        match resp {
+            Ok(_) => {
+                return Ok(())
+            }
+            Err(r) => {
+                let err = self.global_to_error(r);
+                return Err(err.into())
+            }
         }
     }
 
     /// Tracks a module that is async
-    pub fn track_module_promise<'s>(scope: &mut v8::PinnedRef<'_, v8::TryCatch<'s, '_, v8::HandleScope<'_>>>, promise: v8::Local<'s, v8::Promise>) -> Option<Option<mpsc::UnboundedReceiver<V8Result>>> {
+    pub(crate) fn track_module_promise<'s>(scope: &mut v8::PinnedRef<'_, v8::TryCatch<'s, '_, v8::HandleScope<'_>>>, promise: v8::Local<'s, v8::Promise>) -> Option<Option<oneshot::Receiver<V8Result>>> {
         if promise.state() == v8::PromiseState::Pending {
             // if pending, attach a tracker so event loop stays alive, then set module promise then/catch handler
             let (id, rx) = IsolateState::with_mut(scope, |state| {
@@ -343,7 +392,7 @@ impl JsRuntime {
             let (pending, pending_mods, pending_work_units) = {
                 v8::scope!(let scope, &mut self.isolate);
                 IsolateState::with(scope, |state| {
-                    (state.pending_promises(), state.pending_module_promises(), state.pending_work_units())
+                    (state.pending_loop(), state.pending_module_promises(), state.pending_work_units())
                 })
             };
 

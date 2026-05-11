@@ -2,7 +2,14 @@
 import * as a from "./b.js"
 console.log("GO", Reflect, eval)
 console.log(Uint8Array, structuredClone)
-console.log({a:1}, structuredClone({a:1}))
+console.log({a:1}.a, structuredClone({a:1}) == {a:1})
+
+setMessageCallback((msg) => {
+    console.log(msg)
+    setMessageCallback(null)
+})
+
+postMessage("1234")
 // Timer test ================
 class Ticker {
     constructor(n) {
@@ -36,6 +43,7 @@ let cid = setInterval(() => {
     count++
     if (count > 5) {
         clearInterval(cid)
+        postMessage("Got here")
         //timer.stop()
     }
 }, 1000)

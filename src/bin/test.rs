@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use neptune::{fsw::FilesystemWrapper, native::{console::Console, stream::Stream, time::{PerformanceGlobals, TimerGlobals}, web::StructuredCloneGlobals}, timer::ItemHandler};
+use neptune::{fsw::FilesystemWrapper, native::{console::Console, stream::EmbedderPipeGlobals, time::{PerformanceGlobals, TimerGlobals}, web::StructuredCloneGlobals}, runtime::PipedMessage, timer::ItemHandler};
 use rust_embed::Embed;
-use tokio::runtime::LocalOptions;
+use tokio::{runtime::LocalOptions, sync::mpsc};
 use v8::{ContextOptions, CreateParams};
 
 #[derive(Embed, Debug)]
@@ -20,11 +20,12 @@ fn main() {
             // Snapshotting test
             let mut snap_rt = neptune::runtime_snapshotter::JsRuntimeSnapshotter::new(
                 CreateParams::default(),
-                None
+                Some("--jitless".to_string()),
             );
             snap_rt.register_globals::<TimerGlobals>();
             snap_rt.register_globals::<PerformanceGlobals>();
             snap_rt.register_globals::<StructuredCloneGlobals>();
+            snap_rt.register_globals::<EmbedderPipeGlobals>();
 
             let ext_refs = snap_rt.ext_refs(); 
             let blob = snap_rt.finalize(Some(r#"
@@ -71,14 +72,14 @@ class Ticker {
 
         let mut rt = neptune::runtime::JsRuntime::new(
             CreateParams::default(),
-            None, //Some("--jitless".to_string()),
+            Some("--jitless".to_string()),
             FilesystemWrapper::new(vfs)
         );
-        rt.init_class::<Stream>(false);
         rt.init_class::<Console>(true);
         rt.register_globals::<TimerGlobals>();
         rt.register_globals::<PerformanceGlobals>();
         rt.register_globals::<StructuredCloneGlobals>();
+        rt.register_globals::<EmbedderPipeGlobals>();
 
         println!("Created runtime!");
 
@@ -87,9 +88,14 @@ class Ticker {
             println!("[Rust] RustCall on item {item:?}")
         }) }, Duration::from_secs(2));
         rt.queue_stream().add(ItemHandler::RustCall { cb: Box::new(|_scope, item| {
-            println!("[Rust] RustCall v2 on item {item:?}")
+            println!("[Rust] RustCall v2 on item {item:?}");
         }) }, Duration::from_secs(5));
 
+        // Init a pipe for test
+        let (tx, mut rx) = mpsc::unbounded_channel::<PipedMessage>();
+        rt.set_worker_to_embedder_cb(Some(Box::new(move |msg| {
+            let _ = tx.send(msg);
+        })));
 
         if let Err(e) = rt.execute("let _c = new Console(); globalThis.console = _c; console.log(console)") {
             eprintln!("{e}");
@@ -99,8 +105,39 @@ class Ticker {
             eprintln!("{e}");
         }
 
-        if let Err(e) = rt.execute_main_module_async("main.js").await {
-            eprintln!("{e}");
+        let handle = match rt.execute_main_module("main.js") {
+            Ok(handle) => handle,
+            Err(e) => {
+                eprintln!("{e}");
+                return;
+            }
+        };
+
+        tokio::pin!(handle);
+        
+        loop {
+            tokio::select! {
+                r = rt.run_event_loop() => {
+                    if let Err(e) = r {
+                        eprintln!("{e}");
+                        return;
+                    }
+                }
+                msg = &mut handle => {
+                    if let Err(e) = rt.parse_module_resp(msg.unwrap()) {
+                        eprintln!("{e}");
+                    }
+                    return;
+                }
+                Some(msg) = rx.recv() => {
+                    println!("Worker posted {msg:?}");
+                }
+                d = tokio::time::sleep(Duration::from_secs(2)) => {
+                    if let Err(e) = rt.push_message(PipedMessage::PostedString(format!("Rust says hello to this beautiful worker {d:?}"))) {
+                        eprintln!("{e}")
+                    }
+                }
+            }
         }
     });
 }
