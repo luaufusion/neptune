@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::future::Future;
 use crate::cppgc::{try_unwrap_cppgc_persistent_object, Ref};
 use crate::state::{AsyncResult, IsolateState};
@@ -186,9 +187,11 @@ pub trait Globals {
     fn register<'s>(scope: &mut v8::PinScope<'s, '_>, global: v8::Local<v8::Object>);
 
     /// Any external references needed for snapshotting
-    fn get_external_references() -> Vec<v8::FunctionCallback>;
+    fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)>;
 
     /// Adds a global to global scope
+    /// 
+    /// Should not be overriden
     fn add<'s, F>(
         scope: &mut v8::PinScope<'s, '_>, 
         global: v8::Local<v8::Object>,
@@ -202,6 +205,11 @@ pub trait Globals {
         let tmpl = v8::FunctionTemplate::new(scope, callback);
         let val = tmpl.get_function(scope).unwrap();
         global.set(scope, name.into(), val.into());
+    }
+
+    /// What js files to load (if any)
+    fn js_files() -> Vec<(Cow<'static, str>, Cow<'static, str>)> {
+        vec![]
     }
 }
 

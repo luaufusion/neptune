@@ -101,8 +101,8 @@ impl Globals for TimerGlobals {
         Self::add(scope, global, "clearTimeout", clear_timer);
     }
 
-    fn get_external_references() -> Vec<v8::FunctionCallback> {
-        vec![set_timeout.map_fn_to(), set_interval.map_fn_to(), clear_timer.map_fn_to(), clear_timer.map_fn_to()]
+    fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)> {
+        vec![("setTimeout", set_timeout.map_fn_to()), ("setInterval", set_interval.map_fn_to()), ("clearTimeout", clear_timer.map_fn_to()), ("clearInterval", clear_timer.map_fn_to())]
     }
 }
 
@@ -129,7 +129,7 @@ impl Globals for PerformanceGlobals {
         global.set(scope, performance_key.into(), performance_obj.into());
     }
 
-    fn get_external_references() -> Vec<v8::FunctionCallback> {
-        vec![performance_now.map_fn_to()]
+    fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)> {
+        vec![("performance.now", performance_now.map_fn_to())]
     }
 }

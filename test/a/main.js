@@ -5,11 +5,16 @@ console.log(Uint8Array, structuredClone)
 console.log({a:1}.a, structuredClone({a:1}) == {a:1})
 
 setMessageCallback((msg) => {
-    console.log(msg)
+    console.log(`[Worker] ${msg}`)
     setMessageCallback(null)
 })
 
 postMessage("1234")
+let ab = new ArrayBuffer(8);
+let view = new Uint8Array(ab);
+view[1] = 2
+postMessage(view)
+
 // Timer test ================
 class Ticker {
     constructor(n) {

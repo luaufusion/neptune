@@ -150,7 +150,7 @@ impl Globals for StructuredCloneGlobals {
         Self::add(scope, global, "structuredClone", native_structured_clone);
     }
 
-    fn get_external_references() -> Vec<v8::FunctionCallback> {
-        vec![native_structured_clone.map_fn_to()]
+    fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)> {
+        vec![("structuredClone", native_structured_clone.map_fn_to())]
     }
 }

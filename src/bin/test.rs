@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use neptune::{fsw::FilesystemWrapper, native::{console::Console, stream::EmbedderPipeGlobals, time::{PerformanceGlobals, TimerGlobals}, web::StructuredCloneGlobals}, runtime::PipedMessage, timer::ItemHandler};
+use neptune::{fsw::FilesystemWrapper, native::{RegisterAll, console::Console}, runtime::PipedMessage, runtime_snapshotter::NeptuneSnapshot, timer::ItemHandler};
 use rust_embed::Embed;
 use tokio::{runtime::LocalOptions, sync::mpsc};
-use v8::{ContextOptions, CreateParams};
+use v8::CreateParams;
 
 #[derive(Embed, Debug)]
 #[folder = "$CARGO_MANIFEST_DIR/test/a"]
@@ -14,72 +14,18 @@ fn main() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build_local(LocalOptions::default()).expect("Failed to spawn tokio rt");
 
     let vfs = vfs::EmbeddedFS::<Test>::new();
+    let snapshot = NeptuneSnapshot::load("snapshot.bin", |mut ns| {
+        ns.register_all();
+        ns
+    }).expect("Failed to get snapshot");
 
-    rt.block_on(async move {
-        {
-            // Snapshotting test
-            let mut snap_rt = neptune::runtime_snapshotter::JsRuntimeSnapshotter::new(
-                CreateParams::default(),
-                Some("--jitless".to_string()),
-            );
-            snap_rt.register_globals::<TimerGlobals>();
-            snap_rt.register_globals::<PerformanceGlobals>();
-            snap_rt.register_globals::<StructuredCloneGlobals>();
-            snap_rt.register_globals::<EmbedderPipeGlobals>();
-
-            let ext_refs = snap_rt.ext_refs(); 
-            let blob = snap_rt.finalize(Some(r#"
-globalThis.SUCCESS = 132
-
-class Ticker {
-    constructor(n) {
-        this.n = n
-        this.timerId = null;
-    }
-
-    async tick() {
-        return new Promise((resolve) => {
-            this.timerId = setTimeout(resolve, this.n, 123);
-        });
-    }
-
-    stop() {
-        if (this.timerId) {
-            clearTimeout(this.timerId);
-            this.timerId = null;
-        }
-    }
-}
-"#));
-
-            // Load it back
-            let params = v8::Isolate::create_params()
-            .snapshot_blob(blob)
-            .external_references(ext_refs.into());
-            let mut isolate = v8::Isolate::new(params);
-            v8::scope!(let scope, &mut isolate);
-            let context = v8::Context::new(scope, ContextOptions::default());
-            let mut scope = v8::ContextScope::new(scope, context);
-
-            // Check if the baked variable exists
-            let code = v8::String::new(&mut scope, "SUCCESS").unwrap();
-            let script = v8::Script::compile(&mut scope, code, None).unwrap();
-            let result = script.run(&mut scope).unwrap();
-
-            assert_eq!(result.to_rust_string_lossy(&mut scope), "132");
-            println!("Snapshot test verified!");
-        }
-
+    rt.block_on(async move {        
         let mut rt = neptune::runtime::JsRuntime::new(
             CreateParams::default(),
-            Some("--jitless".to_string()),
+            snapshot,
             FilesystemWrapper::new(vfs)
         );
         rt.init_class::<Console>(true);
-        rt.register_globals::<TimerGlobals>();
-        rt.register_globals::<PerformanceGlobals>();
-        rt.register_globals::<StructuredCloneGlobals>();
-        rt.register_globals::<EmbedderPipeGlobals>();
 
         println!("Created runtime!");
 

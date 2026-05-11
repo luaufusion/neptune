@@ -1,3 +1,5 @@
+use v8::SharedRef;
+
 pub(crate) mod sealed {
     pub trait CreateBuffer {}
     impl CreateBuffer for u8 {}
@@ -10,6 +12,22 @@ pub(crate) mod sealed {
     impl CreateBuffer for f64 {}
     impl CreateBuffer for u64 {}
     impl CreateBuffer for i64 {}
+}
+
+pub fn v8_backing_store_to_vec(bs: SharedRef<v8::BackingStore>, offset: usize, len: usize) -> Vec<u8> {
+    let dest = match bs.data() {
+        Some(ptr) => {
+            let p = ptr.as_ptr() as *const u8;
+            let mut dest = vec![0u8; len];
+            unsafe {
+                std::ptr::copy_nonoverlapping(p.add(offset), dest.as_mut_ptr(), len);
+            }
+            dest
+        },
+        None => Vec::with_capacity(0)
+    };
+
+    dest
 }
 
 /// Helper method to create a V8 BackingStore from a boxed u8 slice,

@@ -1,6 +1,6 @@
 use v8::MapFnTo;
 
-use crate::{extension::Globals, runtime::PipedMessage, state::IsolateState};
+use crate::{buffer::v8_backing_store_to_vec, extension::Globals, runtime::PipedMessage, state::IsolateState};
 
 fn post_message<'s>(
     scope: &mut v8::PinScope<'s, '_>, 
@@ -17,17 +17,7 @@ fn post_message<'s>(
         let len = view.byte_length();
         
         // Slice the backing store using the view's offset and length
-        let dest = match ab.get_backing_store().data() {
-            Some(ptr) => {
-                let p = ptr.as_ptr() as *const u8;
-                let mut dest = vec![0u8; len];
-                unsafe {
-                    std::ptr::copy_nonoverlapping(p.add(offset), dest.as_mut_ptr(), len);
-                }
-                dest
-            },
-            None => Vec::with_capacity(0)
-        };
+        let dest = v8_backing_store_to_vec(ab.get_backing_store(), offset, len);
 
         IsolateState::with_mut(scope, |state| {
             if let Some(cb) = &mut state.worker_to_embedder_cb {
@@ -37,17 +27,7 @@ fn post_message<'s>(
     } else if arg0.is_array_buffer() {
         let ab = v8::Local::<v8::ArrayBuffer>::try_from(arg0).unwrap();
         let len = ab.byte_length();
-        let dest = match ab.get_backing_store().data() {
-            Some(ptr) => {
-                let p = ptr.as_ptr() as *const u8;
-                let mut dest = vec![0u8; len];
-                unsafe {
-                    std::ptr::copy_nonoverlapping(p, dest.as_mut_ptr(), len);
-                }
-                dest
-            },
-            None => Vec::with_capacity(0)
-        };
+        let dest = v8_backing_store_to_vec(ab.get_backing_store(), 0, len);
 
         IsolateState::with_mut(scope, |state| {
             if let Some(cb) = &mut state.worker_to_embedder_cb {
@@ -117,7 +97,7 @@ impl Globals for EmbedderPipeGlobals {
         Self::add(scope, global, "setMessageCallback", set_message_callback);
     }
 
-    fn get_external_references() -> Vec<v8::FunctionCallback> {
-        vec![post_message.map_fn_to(), set_message_callback.map_fn_to()]
+    fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)> {
+        vec![("postMessage", post_message.map_fn_to()), ("setMessageCallback", set_message_callback.map_fn_to())]
     }
 }

@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::sync::Once;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -5,9 +6,10 @@ use tokio::sync::{mpsc, oneshot};
 use v8::{ContextOptions, CreateParams};
 
 use crate::buffer::v8_new_array_buffer;
-use crate::extension::{Globals, NativeObject};
+use crate::extension::NativeObject;
 use crate::fsw::FilesystemWrapper;
 use crate::module::{create_module_origin, module_resolve_callback};
+use crate::runtime_snapshotter::NeptuneSnapshot;
 use crate::state::{AsyncResult, IsolateState};
 use crate::timer::QueueStream;
 
@@ -77,26 +79,13 @@ pub struct JsRuntime {
 }
 
 impl JsRuntime {
-    #[inline(always)]
-    pub(super) fn create_global_context(isolate: &mut v8::Isolate) -> v8::Global<v8::Context> {
-        v8::scope!(let scope, isolate);
-        
-        // Create a template for the global object (`window` / `globalThis`)
-        let global_template = v8::ObjectTemplate::new(scope);
+    pub fn new(params: CreateParams, snapshot: NeptuneSnapshot, vfs: FilesystemWrapper) -> Self {
+        assert!(!snapshot.globals.is_empty(), "Attempted to load a NeptuneSnapshot with no external references!");
 
-        // Instantiate the context
-        let context = v8::Context::new(scope, ContextOptions {
-            global_template: Some(global_template),
-            ..Default::default()
-        });
-        v8::Global::new(scope, context)
-    }
-
-    pub fn new(params: CreateParams, flags: Option<String>, vfs: FilesystemWrapper) -> Self {
         // Init v8 platform if needed
         V8_INIT.call_once(|| {
-            if let Some(flags) = flags {
-                v8::V8::set_flags_from_string(&flags);
+            if let Some(flags) = &snapshot.flags {
+                v8::V8::set_flags_from_string(flags);
             }
             let platform = v8::new_default_platform(0, true).make_shared();
             v8::cppgc::initialize_process(platform.clone());
@@ -113,14 +102,24 @@ impl JsRuntime {
             platform,
             v8::cppgc::HeapCreateParams::default(),
         );
-        let mut isolate = v8::Isolate::new(params.cpp_heap(cpp_heap));
+
+        let params = params
+            .external_references(Cow::Owned(snapshot.ext_refs()))
+            .snapshot_blob(snapshot.startup_data)
+            .cpp_heap(cpp_heap);
+
+        let mut isolate = v8::Isolate::new(params);
 
         isolate.set_promise_reject_callback(promise_reject_callback);
         IsolateState::attach(&mut isolate, tx, vfs);
 
         // Create global context
-        let global_context = Self::create_global_context(&mut isolate);
-
+        let global_context = {
+            v8::scope!(let scope, &mut isolate);
+            let global_context = v8::Context::new(scope, ContextOptions::default());
+            v8::Global::new(scope, global_context)
+        };
+        
         Self {
             isolate,
             global_context,
@@ -205,16 +204,6 @@ impl JsRuntime {
             let constructor_func = template.get_function(scope).unwrap();
             global.set(scope, name_v8.into(), constructor_func.into());
         }
-    }
-
-    /// Register a NativeObject with the runtime
-    pub fn register_globals<T: Globals>(&mut self) {
-        v8::scope!(let scope, &mut self.isolate); 
-        let context = v8::Local::new(scope, &self.global_context);
-        let scope = &mut v8::ContextScope::new(scope, context);
-
-        let global = context.global(scope);
-        T::register(scope, global);
     }
 
     /// Executes synchronous JavaScript code

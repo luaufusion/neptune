@@ -1,15 +1,79 @@
 use std::{borrow::Cow, collections::{HashMap, VecDeque}};
 
+use v8::MapFnTo;
+
+use crate::extension::Globals;
+
 const PRIMORDIALS: &str = include_str!("node/primordials.js");
 const SCRIPT_EXEC_WRAPPER: &str = include_str!("neptune/script_exec_wrapper.js"); // script wrapper to execute all of neptunes js code correctly
+
+// Internal bootstrap function to probe a promise 
+//
+// On success, returns an array: [state, value/reason]
+fn bootstrap_get_promise_details<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments,
+    mut retval: v8::ReturnValue,
+) {
+    let promise = match v8::Local::<v8::Promise>::try_from(args.get(0)) {
+        Ok(p) => p,
+        Err(_) => {
+            let Some(msg) = v8::String::new(scope, "Promise expected as argument to getPromiseDetails") else {
+                return;
+            };
+            let error = v8::Exception::type_error(scope, msg);
+            scope.throw_exception(error);
+            return;
+        }
+    };
+
+    let state = promise.state();
+    let state_int = match state {
+        v8::PromiseState::Pending => 0,
+        v8::PromiseState::Fulfilled => 1,
+        v8::PromiseState::Rejected => 2,
+    };
+
+    let result_arr = v8::Array::new(scope, 2);
+    let state_val = v8::Integer::new(scope, state_int);
+    result_arr.set_index(scope, 0, state_val.into());
+
+    if state != v8::PromiseState::Pending {
+        let value = promise.result(scope);
+        result_arr.set_index(scope, 1, value);
+    }
+
+    retval.set(result_arr.into());
+}
+
+pub struct BootstrapGlobals {}
+impl Globals for BootstrapGlobals {
+    fn register<'s>(scope: &mut v8::PinScope<'s, '_>, global: v8::Local<v8::Object>) {
+        let bobj = v8::Object::new(scope);
+
+        Self::add(scope, bobj, "getPromiseDetails", bootstrap_get_promise_details);
+
+        let bkey = v8::String::new(scope, "bootstrap").unwrap();
+        global.set(scope, bkey.into(), bobj.into());
+    }
+
+    fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)> {
+        vec![("getPromiseDetails", bootstrap_get_promise_details.map_fn_to())]
+    }
+
+    fn js_files() -> Vec<(Cow<'static, str>, Cow<'static, str>)> {
+        // we need primordials first
+        vec![(Cow::Borrowed("node/primordials.js"), Cow::Borrowed(PRIMORDIALS))]
+    }
+}
 
 /// Load allows loading in scripts into the created neptune runtime
 /// 
 /// It supports both snapshotted and non-snapshotted runtimes
+/// 
+/// Assumes that `BootstrapGlobals` has been loaded as the first global into the RuntimeSnapshotter before execution so primordials etc get loaded first
 pub fn load_js<'s>(scope: &mut v8::PinScope<'s, '_>, files: Vec<(Cow<'static, str>, Cow<'static, str>)>) -> Result<(), crate::Error> {
-    let mut files = VecDeque::from(files);
-    // insert primordials in the first spot of our vec
-    files.push_front((Cow::Borrowed("node/primordials.js"), Cow::Borrowed(PRIMORDIALS)));
+    let files = VecDeque::from(files);
 
     // script exec wrapper needs files as a json and the fileorder
     let file_order = files.iter().map(|(k, _)| k.to_owned()).collect::<Vec<_>>();
@@ -57,6 +121,10 @@ pub fn load_js<'s>(scope: &mut v8::PinScope<'s, '_>, files: Vec<(Cow<'static, st
             return Err("Unknown error has occurred".into())
         } 
     }
+
+    // Drop bootstrap obj
+    let bkey = v8::String::new(scope, "bootstrap").unwrap();
+    scope.get_current_context().global(scope).set(scope, bkey.into(), v8::undefined(scope).into());
 
     Ok(())
 }

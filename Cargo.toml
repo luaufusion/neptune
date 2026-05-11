@@ -11,10 +11,10 @@ serde = "1.0.228"
 vfs = { git = "https://github.com/Anti-Raid/rust-vfs", features = ["embedded-fs"] } # TODO: switch to a mluau fork soon
 rust-embed = { version = "8", features = ["interpolate-folder-path"] }
 futures = "0.3"
-parking_lot = "0.12.5"
 rand = "0.10.1"
 colored = { version = "3.1.1", optional = true }
 serde_json = "1.0.149"
+wincode = { version = "0.5.3", features = ["derive"] }
 
 [features]
 default = ["console"]
