@@ -204,6 +204,7 @@ pub trait Globals {
         let name = v8::String::new(scope, name).unwrap();
         let tmpl = v8::FunctionTemplate::new(scope, callback);
         let val = tmpl.get_function(scope).unwrap();
+        val.set_name(name.into());
         global.set(scope, name.into(), val.into());
     }
 

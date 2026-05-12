@@ -2,10 +2,14 @@ use std::{borrow::Cow, collections::{HashMap, VecDeque}};
 
 use v8::MapFnTo;
 
-use crate::extension::Globals;
+use crate::{extension::Globals, runtime::{ConsoleLogMode, LogMessage}, state::IsolateState};
 
+// node
 const PRIMORDIALS: &str = include_str!("node/primordials.js");
+
+// neptune
 const SCRIPT_EXEC_WRAPPER: &str = include_str!("neptune/script_exec_wrapper.js"); // script wrapper to execute all of neptunes js code correctly
+const CONSOLE_JS: &str = include_str!("neptune/console.js");
 
 // Internal bootstrap function to probe a promise 
 //
@@ -46,24 +50,79 @@ fn bootstrap_get_promise_details<'s>(
     retval.set(result_arr.into());
 }
 
+fn bootstrap_console_log<'s>(
+    scope: &mut v8::PinScope<'s, '_>, 
+    args: v8::FunctionCallbackArguments<'s>, 
+    _retval: v8::ReturnValue,
+) {
+    let mode = match v8::Local::<v8::Uint32>::try_from(args.get(0)) {
+        Ok(p) => p,
+        Err(_) => {
+            let Some(msg) = v8::String::new(scope, "Mode expected as argument to consoleLog") else {
+                return;
+            };
+            let error = v8::Exception::type_error(scope, msg);
+            scope.throw_exception(error);
+            return;
+        }
+    };
+
+    let s = match v8::Local::<v8::String>::try_from(args.get(1)) {
+        Ok(p) => p,
+        Err(_) => {
+            let Some(msg) = v8::String::new(scope, "String expected as argument to consoleLog") else {
+                return;
+            };
+            let error = v8::Exception::type_error(scope, msg);
+            scope.throw_exception(error);
+            return;
+        }
+    };
+
+    let clm = match mode.value() {
+        0 => ConsoleLogMode::Log,
+        1 => ConsoleLogMode::Error,
+        _ => {
+            let Some(msg) = v8::String::new(scope, "Invalid mode provided") else {
+                return;
+            };
+            let error = v8::Exception::type_error(scope, msg);
+            scope.throw_exception(error);
+            return;
+        }
+    };
+
+    let s = s.to_rust_string_lossy(scope);
+
+    IsolateState::with(scope, |state| {
+        if let Some(ref cb) = state.embedder_log_cb {
+            (cb)(LogMessage::ConsoleLog { msg: s, mode: clm});
+        }
+    });
+}
+
 pub struct BootstrapGlobals {}
 impl Globals for BootstrapGlobals {
     fn register<'s>(scope: &mut v8::PinScope<'s, '_>, global: v8::Local<v8::Object>) {
         let bobj = v8::Object::new(scope);
 
         Self::add(scope, bobj, "getPromiseDetails", bootstrap_get_promise_details);
+        Self::add(scope, bobj, "consoleLog", bootstrap_console_log);
 
         let bkey = v8::String::new(scope, "bootstrap").unwrap();
         global.set(scope, bkey.into(), bobj.into());
     }
 
     fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)> {
-        vec![("getPromiseDetails", bootstrap_get_promise_details.map_fn_to())]
+        vec![("getPromiseDetails", bootstrap_get_promise_details.map_fn_to()), ("consoleLog", bootstrap_console_log.map_fn_to())]
     }
 
     fn js_files() -> Vec<(Cow<'static, str>, Cow<'static, str>)> {
         // we need primordials first
-        vec![(Cow::Borrowed("node/primordials.js"), Cow::Borrowed(PRIMORDIALS))]
+        vec![
+            (Cow::Borrowed("node/primordials.js"), Cow::Borrowed(PRIMORDIALS)),
+            (Cow::Borrowed("node/console.js"), Cow::Borrowed(CONSOLE_JS))
+        ]
     }
 }
 

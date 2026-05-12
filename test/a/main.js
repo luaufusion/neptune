@@ -1,8 +1,9 @@
 // Base test =================
 import * as a from "./b.js"
-console.log("GO", Reflect, eval)
+console.log("GO", Reflect, eval, {a: "123"})
 console.log(Uint8Array, structuredClone)
 console.log({a:1}.a, structuredClone({a:1}) == {a:1})
+console.log(new Promise((resolve) => resolve(123)))
 
 setMessageCallback((msg) => {
     console.log(`[Worker] ${msg}`)

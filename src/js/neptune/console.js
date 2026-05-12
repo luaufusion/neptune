@@ -1,21 +1,14 @@
-let neptunePrint = globalThis.bootstrap.neptunePrint
+let neptunePrint = globalThis.bootstrap.consoleLog
 let getPromiseDetails = globalThis.bootstrap.getPromiseDetails
 
-const ANSI = neptunePrint ? {
+const ANSI = {
   reset: "\x1b[0m",
   number: "\x1b[33m", // Yellow
   string: "\x1b[32m", // Green
   boolean: "\x1b[35m", // Magenta
   cyan: "\x1b[36m",
   dim: "\x1b[90m"
-} : {
-    reset: "",
-    number: "",
-    string: "",
-    boolean: "",
-    cyan: "",
-    dim: ""
-};
+}
 
 function inspect(val, depth = 4, seen = new WeakSet()) {
     if (val === null) return `${ANSI.cyan}null${ANSI.reset}`;
@@ -25,9 +18,13 @@ function inspect(val, depth = 4, seen = new WeakSet()) {
   
     if (type === 'number') return `${ANSI.number}${val}${ANSI.reset}`;
     if (type === 'boolean') return `${ANSI.boolean}${val}${ANSI.reset}`;
-    if (type === 'string') return `${ANSI.string}'${val}'${ANSI.reset}`;
+    if (type === 'string') {
+        if(depth == 4) return `${val}`
+        return `${ANSI.string}'${val}'${ANSI.reset}`
+    };
     if (type === "bigint") return `${ANSI.number}BigInt(${val})${ANSI.reset}`
     if (type === "symbol") return `${ANSI.number}Symbol('${val}')${ANSI.reset}`
+    if (type == 'function') return `${ANSI.cyan}[Function: ${val.name}]${ANSI.reset}`
   
     if (type === 'object') {
         if (seen.has(val)) return `${ANSI.cyan}[Circular]${ANSI.reset}`;
@@ -59,9 +56,21 @@ function inspect(val, depth = 4, seen = new WeakSet()) {
             return `[ ${items.join(", ")} ]`;
         }
 
-        const entries = Object.entries(val).map(([k, v]) => `${k}: ${inspect(v, depth - 1, seen)}`);
-        return `{ ${entries.join(", ")} }`;
+        const entries = Reflect.ownKeys(Object.getOwnPropertyDescriptors(val)).map((k) => `${String(k)}: ${inspect(val[k], depth - 1, seen)}`);
+        return `${val} { ${entries.join(", ")} }`;
     }
 
   return String(val);
 }
+
+globalThis.console = {
+    log: function(...args) {
+        const formatted = args.map(arg => inspect(arg)).join(" ");
+        neptunePrint(0, formatted)        
+    },
+    error: function(...args) {
+        const formatted = args.map(arg => inspect(arg)).join(" ");
+        neptunePrint(1, formatted)        
+    },
+    [Symbol.toStringTag]: 'console'
+};

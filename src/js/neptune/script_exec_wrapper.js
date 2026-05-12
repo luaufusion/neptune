@@ -28,6 +28,8 @@
             `${source}\n//# sourceURL=neptune://internal/${id}`
         );
 
+        //if (id.includes("console.js")) throw new Error(wrapper.toString())
+
         wrapper(
             module.exports,
             internalRequire,

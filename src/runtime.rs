@@ -23,10 +23,16 @@ pub enum PipedMessage {
     PostedString(String),
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub enum ConsoleLogMode {
+    Log,
+    Error
+}
+
 #[derive(Debug, PartialEq)]
 /// A log message piped from the runtime/worker to the embedder
 pub enum LogMessage {
-    ConsoleLog { msg: String },
+    ConsoleLog { mode: ConsoleLogMode, msg: String },
     DbgOnModuleAsyncDone,
     DbgOnModuleAsyncError,
     UncaughtPromise { error: String }
@@ -35,7 +41,7 @@ pub enum LogMessage {
 impl LogMessage {
     pub fn repr(&self) -> Cow<'_, str> {
         match self {
-            Self::ConsoleLog { msg } => msg.into(),
+            Self::ConsoleLog { mode: _, msg } => msg.into(),
             Self::DbgOnModuleAsyncDone => "on_module_async_done".into(),
             Self::DbgOnModuleAsyncError => "on_module_async_error".into(),
             Self::UncaughtPromise {error} => format!("Uncaught (in promise) {error}\n").into()

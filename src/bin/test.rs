@@ -1,6 +1,6 @@
 use std::{rc::Rc, time::Duration};
 
-use neptune::{fsw::FilesystemWrapper, native::{RegisterAll, console::Console}, runtime::{EventLoopStatus, JsRuntime, LogMessage, PipedMessage}, runtime_snapshotter::NeptuneSnapshot, timer::ItemHandler};
+use neptune::{fsw::FilesystemWrapper, native::RegisterAll, runtime::{ConsoleLogMode, EventLoopStatus, JsRuntime, LogMessage, PipedMessage}, runtime_snapshotter::NeptuneSnapshot, timer::ItemHandler};
 use rust_embed::Embed;
 use tokio::{runtime::LocalOptions, sync::mpsc};
 use v8::CreateParams;
@@ -25,7 +25,6 @@ fn main() {
             snapshot,
             FilesystemWrapper::new(vfs)
         );
-        rt.init_class::<Console>(true);
 
         println!("Created runtime!");
 
@@ -46,8 +45,19 @@ fn main() {
         // Init console log cb
         rt.set_embedder_log_cb(Some(Rc::new(|log_msg| {
             match log_msg {
-                LogMessage::ConsoleLog { msg } => {
-                    println!("{msg}")
+                LogMessage::ConsoleLog { mode, msg } => {
+                    match mode {
+                        ConsoleLogMode::Error => {
+                            #[cfg(feature = "console")]
+                            {
+                                use colored::*;
+                                eprintln!("{}", msg.red())
+                            }
+                        }
+                        ConsoleLogMode::Log => {
+                            println!("{msg}")
+                        }
+                    }
                 },
                 LogMessage::DbgOnModuleAsyncDone | LogMessage::DbgOnModuleAsyncError => {},
                 _ => {
@@ -60,10 +70,6 @@ fn main() {
                 }
             }
         })));
-
-        if let Err(e) = rt.execute("let _c = new Console(); globalThis.console = _c; console.log(console)") {
-            eprintln!("{e}");
-        }
 
         if let Err(e) = rt.execute("console.log('sss' + JSON.stringify({a: 1}));") {
             eprintln!("{e}");
