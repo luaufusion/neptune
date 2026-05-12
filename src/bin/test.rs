@@ -1,6 +1,6 @@
-use std::time::Duration;
+use std::{rc::Rc, time::Duration};
 
-use neptune::{fsw::FilesystemWrapper, native::{RegisterAll, console::Console}, runtime::PipedMessage, runtime_snapshotter::NeptuneSnapshot, timer::ItemHandler};
+use neptune::{fsw::FilesystemWrapper, native::{RegisterAll, console::Console}, runtime::{EventLoopStatus, JsRuntime, LogMessage, PipedMessage}, runtime_snapshotter::NeptuneSnapshot, timer::ItemHandler};
 use rust_embed::Embed;
 use tokio::{runtime::LocalOptions, sync::mpsc};
 use v8::CreateParams;
@@ -43,6 +43,24 @@ fn main() {
             let _ = tx.send(msg);
         })));
 
+        // Init console log cb
+        rt.set_embedder_log_cb(Some(Rc::new(|log_msg| {
+            match log_msg {
+                LogMessage::ConsoleLog { msg } => {
+                    println!("{msg}")
+                },
+                LogMessage::DbgOnModuleAsyncDone | LogMessage::DbgOnModuleAsyncError => {},
+                _ => {
+                    let msg = log_msg.repr();
+                    #[cfg(feature = "console")]
+                    {
+                        use colored::*;
+                        eprintln!("{}: {msg}", "error".red().bold());
+                    }
+                }
+            }
+        })));
+
         if let Err(e) = rt.execute("let _c = new Console(); globalThis.console = _c; console.log(console)") {
             eprintln!("{e}");
         }
@@ -60,25 +78,44 @@ fn main() {
         };
 
         tokio::pin!(handle);
-        
+
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+
         loop {
             tokio::select! {
-                r = rt.run_event_loop() => {
-                    if let Err(e) = r {
-                        eprintln!("{e}");
+                r = rt.tick() => {
+                    if r == EventLoopStatus::Idle { 
+                        return;
+                    } else if r == EventLoopStatus::Ok {
+                        continue; // event loop not done yet
+                    } else {
+                        #[cfg(feature = "console")]
+                        {
+                            use colored::*;
+                            eprintln!("{}: {}", "error".red().bold(), r.repr());
+                        }   
                         return;
                     }
                 }
-                msg = &mut handle => {
-                    if let Err(e) = rt.parse_module_resp(msg.unwrap()) {
-                        eprintln!("{e}");
+                Ok(msg) = &mut handle => {
+                    if let Err(e) = msg {
+                        let e = rt.with_context(e, |scope, e| {
+                            let e = v8::Local::new(scope, e);
+                            JsRuntime::local_to_error(scope, e) 
+                        });
+
+                        #[cfg(feature = "console")]
+                        {
+                            use colored::*;
+                            eprintln!("{}: {e}", "error".red().bold());
+                        }   
                     }
-                    return;
+                    //return;
                 }
                 Some(msg) = rx.recv() => {
                     println!("Worker posted {msg:?}");
                 }
-                d = tokio::time::sleep(Duration::from_secs(2)) => {
+                d = interval.tick() => {
                     if let Err(e) = rt.push_message(PipedMessage::PostedString(format!("Rust says hello to this beautiful worker {d:?}"))) {
                         eprintln!("{e}")
                     }

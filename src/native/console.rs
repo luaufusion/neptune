@@ -1,6 +1,6 @@
 use v8::{cppgc::GarbageCollected};
 
-use crate::{extension::{NativeObject, NativeObjectBuilder}};
+use crate::{extension::{NativeObject, NativeObjectBuilder}, runtime::LogMessage, state::IsolateState};
 
 
 /// Basic console API for testing
@@ -51,7 +51,11 @@ fn console_log<'s>(
         v.push(pretty_print_arg(scope, arg));
     }
 
-    println!("{}", v.join(", "))
+    IsolateState::with(scope, |state| {
+        if let Some(ref cb) = state.embedder_log_cb {
+            (cb)(LogMessage::ConsoleLog { msg: v.join(" ") });
+        }
+    });
 }
 
 fn pretty_print_arg<'s>(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'_, v8::Value>) -> String {

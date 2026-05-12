@@ -1,7 +1,7 @@
-use std::{any::TypeId, cell::Cell, collections::HashMap};
+use std::{any::TypeId, cell::Cell, collections::HashMap, rc::Rc};
 
 use tokio::sync::{mpsc, oneshot};
-use crate::{fsw::FilesystemWrapper, module::ModuleRegistry, runtime::{PipedMessage, Value}, timer::QueueStream};
+use crate::{fsw::FilesystemWrapper, module::ModuleRegistry, runtime::{LogMessage, PipedMessage, Value}, timer::QueueStream};
 pub type V8Result = Result<(), v8::Global<v8::Value>>;
 
 /// The message passed from Tokio background tasks back to V8
@@ -41,6 +41,7 @@ pub struct IsolateState {
     // embedder pipe
     pub(super) worker_to_embedder_cb: Option<Box<dyn FnMut(PipedMessage)>>,
     pub(super) embedder_to_worker_cb: Option<v8::Global<v8::Function>>,
+    pub(super) embedder_log_cb: Option<Rc<dyn Fn(LogMessage)>>
 }
 
 impl std::fmt::Debug for IsolateState {
@@ -76,6 +77,7 @@ impl IsolateState {
             last_reported_time: Cell::new(0.0),
             worker_to_embedder_cb: None,
             embedder_to_worker_cb: None,
+            embedder_log_cb: None
         });
     }
 
