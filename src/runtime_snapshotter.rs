@@ -183,13 +183,7 @@ impl JsRuntimeSnapshotter {
         let refs: Vec<v8::ExternalReference> = self.ext_refs();
 
         // Create isolate and set state inside of a slot
-        let platform = v8::V8::get_current_platform();
-        let cpp_heap = v8::cppgc::Heap::create(
-            platform,
-            v8::cppgc::HeapCreateParams::default(),
-        );
-
-        let isolate = v8::Isolate::snapshot_creator(Some(Cow::Owned(refs)), Some(self.params.cpp_heap(cpp_heap)));
+        let isolate = v8::Isolate::snapshot_creator(Some(Cow::Owned(refs)), Some(self.params));
 
         // Add drop guard to ensure a panic always calls create_blob
         struct IsoWrapper {

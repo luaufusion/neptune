@@ -1,4 +1,4 @@
-use std::{any::TypeId, cell::Cell, collections::HashMap, rc::Rc};
+use std::{cell::Cell, collections::HashMap, rc::Rc};
 
 use tokio::sync::{mpsc, oneshot};
 use crate::{fsw::FilesystemWrapper, module::ModuleRegistry, runtime::{LogMessage, PipedMessage, Value}, timer::QueueStream};
@@ -20,10 +20,6 @@ pub struct IsolateState {
     tx: mpsc::UnboundedSender<AsyncResult>,
     promise_registry: HashMap<usize, v8::Global<v8::PromiseResolver>>,
     next_promise_id: usize,
-
-    // needed for cppgc
-    pub(super) cppgc_fallback_template: v8::Global<v8::ObjectTemplate>,
-    pub(super) cppgc_type_templates: HashMap<TypeId, v8::Global<v8::FunctionTemplate>>,
 
     // modules
     modules: ModuleRegistry,
@@ -55,20 +51,10 @@ impl IsolateState {
     /// 
     /// Should not be used outside of runtime
     pub fn attach<'s>(isolate: &mut v8::Isolate, tx: mpsc::UnboundedSender<AsyncResult>, vfs: FilesystemWrapper) {
-        let cppgc_fallback_template = {
-            v8::scope!(let scope, isolate);
-            let tpl = v8::ObjectTemplate::new(scope);
-            // CRITICAL: Must be exactly 2 for cppgc to work
-            tpl.set_internal_field_count(2); 
-            v8::Global::new(scope, tpl)
-        };
-
         isolate.set_slot(Self {
             tx,
             promise_registry: HashMap::new(),
             next_promise_id: 1,
-            cppgc_fallback_template,
-            cppgc_type_templates: HashMap::new(),
             modules: ModuleRegistry::new(vfs),
             module_promise_tracker: HashMap::new(),
             next_module_promise_tracker_id: 0,

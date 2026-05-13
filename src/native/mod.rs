@@ -1,8 +1,9 @@
 pub mod stream;
 pub mod time;
 pub mod web;
+pub mod encoding; // Web encoding API
 
-use crate::{extension::Globals, native::{stream::EmbedderPipeGlobals, time::{PerformanceGlobals, TimerGlobals}, web::StructuredCloneGlobals}};
+use crate::{extension::Globals, native::{encoding::EncodingApiGlobals, stream::EmbedderPipeGlobals, time::{PerformanceGlobals, TimerGlobals}, web::StructuredCloneGlobals}};
 
 /// Trait to register all globals
 pub trait RegisterAll {
@@ -14,5 +15,6 @@ pub trait RegisterAll {
         self.register_globals_::<PerformanceGlobals>();
         self.register_globals_::<StructuredCloneGlobals>();
         self.register_globals_::<EmbedderPipeGlobals>();
+        self.register_globals_::<EncodingApiGlobals>();
     }
 }

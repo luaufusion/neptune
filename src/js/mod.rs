@@ -121,7 +121,7 @@ impl Globals for BootstrapGlobals {
         // we need primordials first
         vec![
             (Cow::Borrowed("node/primordials.js"), Cow::Borrowed(PRIMORDIALS)),
-            (Cow::Borrowed("node/console.js"), Cow::Borrowed(CONSOLE_JS))
+            (Cow::Borrowed("neptune/console.js"), Cow::Borrowed(CONSOLE_JS))
         ]
     }
 }

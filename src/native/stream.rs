@@ -11,13 +11,20 @@ fn post_message<'s>(
     
     if arg0.is_array_buffer_view() {
         let view = v8::Local::<v8::ArrayBufferView>::try_from(arg0).unwrap();
-        let ab = view.buffer(scope).expect("View has no buffer");
+        let Some(bs) = view.get_backing_store() else {
+            let Some(msg) = v8::String::new(scope, "ArrayBufferView has no underlying backing store") else {
+                return;
+            };
+            let error = v8::Exception::type_error(scope, msg);
+            scope.throw_exception(error);
+            return;
+        };
         
         let offset = view.byte_offset();
         let len = view.byte_length();
         
         // Slice the backing store using the view's offset and length
-        let dest = v8_backing_store_to_vec(ab.get_backing_store(), offset, len);
+        let dest = v8_backing_store_to_vec(bs, offset, len);
 
         IsolateState::with_mut(scope, |state| {
             if let Some(cb) = &mut state.worker_to_embedder_cb {

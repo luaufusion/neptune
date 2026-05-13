@@ -7,7 +7,6 @@ use tokio::sync::{mpsc, oneshot};
 use v8::{ContextOptions, CreateParams};
 
 use crate::buffer::v8_new_array_buffer;
-use crate::extension::NativeObject;
 use crate::fsw::FilesystemWrapper;
 use crate::module::{create_module_origin, module_resolve_callback};
 use crate::runtime_snapshotter::NeptuneSnapshot;
@@ -144,16 +143,9 @@ impl JsRuntime {
         let (tx, rx) = mpsc::unbounded_channel::<AsyncResult>();
 
         // Create isolate and set state inside of a slot
-        let platform = v8::V8::get_current_platform();
-        let cpp_heap = v8::cppgc::Heap::create(
-            platform,
-            v8::cppgc::HeapCreateParams::default(),
-        );
-
         let params = params
             .external_references(Cow::Owned(snapshot.ext_refs()))
-            .snapshot_blob(snapshot.startup_data)
-            .cpp_heap(cpp_heap);
+            .snapshot_blob(snapshot.startup_data);
 
         let mut isolate = v8::Isolate::new(params);
 
@@ -195,7 +187,8 @@ impl JsRuntime {
         iso_state.worker_to_embedder_cb = cb;
     }
 
-    /// Set the callback to call when the embedder posts a message for the worker to see
+    /// Overrides the callback to call when the embedder posts a message for the worker to see
+    #[doc(hidden)] // not stable
     pub fn set_embedder_to_worker_cb(&mut self, cb: Option<v8::Global<v8::Function>>) {
         let iso_state = self.isolate.get_slot_mut::<IsolateState>().unwrap();
         iso_state.embedder_to_worker_cb = cb;
@@ -245,34 +238,6 @@ impl JsRuntime {
         let iso_state = self.isolate.get_slot::<IsolateState>().unwrap();
         if let Some(embedder_log_cb) = &iso_state.embedder_log_cb {
             (embedder_log_cb)(evt)
-        }
-    }
-
-    /// Register a NativeObject with the runtime
-    pub fn init_class<T: NativeObject>(&mut self, expose: bool) {
-        let global_template = {
-            v8::scope!(let scope, &mut self.isolate);
-                        
-            let template = T::setup(scope);
-            v8::Global::new(scope, template)
-        };
-
-        v8::scope!(let scope, &mut self.isolate); 
-        let state = scope.get_slot_mut::<IsolateState>().unwrap();
-        state.cppgc_type_templates.insert(std::any::TypeId::of::<T>(), global_template.clone());
-
-        if expose {
-            let context = v8::Local::new(scope, &self.global_context);
-            let scope = &mut v8::ContextScope::new(scope, context);
-
-            let global = context.global(scope);
-            
-            let name_v8 = v8::String::new(scope, T::class_name()).unwrap();
-
-            // Get constructor func and save to global obj
-            let template = v8::Local::new(scope, global_template);
-            let constructor_func = template.get_function(scope).unwrap();
-            global.set(scope, name_v8.into(), constructor_func.into());
         }
     }
 

@@ -48,7 +48,7 @@ function inspect(val, depth = 4, seen = new WeakSet()) {
         seen.add(val);
     
         if (ArrayBuffer.isView(val)) {
-            return `${val.constructor.name}(${val.length}) [ ${Array.from(val.buffer.slice(0, 10)).join(', ')}${val.buffer.byteLength > 10 ? '...' : ''} ]`;
+            return `${val.constructor.name}(${val.length}) [ ${Array.from(val.slice(0, 15)).join(', ')}${val.byteLength > 15 ? '...' : ''} ]`;
         }
 
         if (Array.isArray(val)) {

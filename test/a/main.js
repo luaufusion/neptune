@@ -5,6 +5,16 @@ console.log(Uint8Array, structuredClone)
 console.log({a:1}.a, structuredClone({a:1}) == {a:1})
 console.log(new Promise((resolve) => resolve(123)))
 
+// Encoder API (Encode)
+let s = "hello world"
+let enc = new TextEncoder()
+let ui8 = enc.encode(s)
+console.log(ui8)
+enc.encodeInto("bob", ui8)
+console.log(ui8)
+
+// Message test =============
+
 setMessageCallback((msg) => {
     console.log(`[Worker] ${msg}`)
     setMessageCallback(null)
