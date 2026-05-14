@@ -16,12 +16,13 @@ console.log(ui8, dec.decode(ui8))
 console.log(Intl, Temporal)
 
 // Message test =============
-
-setMessageCallback((msg) => {
+const cb = (msg) => {
     console.log(`[Worker] ${msg}`)
-    setMessageCallback(null)
-})
-
+    setMessageCallback(undefined)
+    if(getMessageCallback() !== undefined) throw new Error("getMessageCallback did not return undefined after setting to undefined")
+}
+setMessageCallback(cb)
+if(getMessageCallback() !== cb) throw new Error("getMessageCallback did not return the expected cb")
 postMessage("1234")
 let ab = new ArrayBuffer(8);
 let view = new Uint8Array(ab);

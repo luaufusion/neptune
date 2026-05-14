@@ -17,13 +17,15 @@ To allow for communication between the embedder host and the underlying javascri
 **JS Side**
 
 - `postMessage(msg: string | ArrayBuffer | ArrayBufferView)` => Pushes a message `msg` to the embedder synchronously
-- `setMessageCallback(f: (string | ArrayBuffer): any)` => Sets the message callback to `f`. Whenever an embedder sends a message to the worker, the callback `f` will be called with the sent message
+- `getMessageCallback(): (string | ArrayBuffer): any) | undefined` => Returns the callback set by `setMessageCallback`
+- `setMessageCallback(f: (string | ArrayBuffer): any | undefined)` => Sets the message callback to `f`. Whenever an embedder sends a message to the worker, the callback `f` will be called with the sent message
 
 **Embedder Side**
 
 - `JsRuntime::push_message` => Allows pushing either a `string` or an `Vec<u8>` (copied into a JS ArrayBuffer) to the worker
 - `JsRuntime::set_worker_to_embedder_cb` => Allows for the embedder to recieve a callback when the worker sends an embedder to it
-- `JsRuntime::set_embedder_to_worker_cb` => Allows for the embedder to override the callback the worker gave with `setMessageCallback`. Should not be used outside of debugging and may be removed
+- `JsRuntime::get_embedder_to_worker_cb` => Allows for the embedder to get the callback the worker gave with `setMessageCallback`
+- `JsRuntime::set_embedder_to_worker_cb` => Allows for the embedder to override the callback the worker gave with `setMessageCallback`
 
 ## TODO APIS
 

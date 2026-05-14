@@ -188,7 +188,12 @@ impl JsRuntime {
     }
 
     /// Overrides the callback to call when the embedder posts a message for the worker to see
-    #[doc(hidden)] // not stable
+    pub fn get_embedder_to_worker_cb(&self) -> Option<v8::Global<v8::Function>> {
+        let iso_state = self.isolate.get_slot::<IsolateState>().unwrap();
+        iso_state.embedder_to_worker_cb.clone()
+    }
+
+    /// Overrides the callback to call when the embedder posts a message for the worker to see
     pub fn set_embedder_to_worker_cb(&mut self, cb: Option<v8::Global<v8::Function>>) {
         let iso_state = self.isolate.get_slot_mut::<IsolateState>().unwrap();
         iso_state.embedder_to_worker_cb = cb;

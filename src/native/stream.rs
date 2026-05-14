@@ -97,14 +97,27 @@ fn set_message_callback<'s>(
     };
 }
 
+fn get_message_callback<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    _args: v8::FunctionCallbackArguments,
+    mut retval: v8::ReturnValue,
+) {
+    let state = scope.get_slot::<IsolateState>().unwrap();
+    if let Some(cb) = &state.embedder_to_worker_cb {
+        let local_cb = v8::Local::new(scope, cb);
+        retval.set(local_cb.into());
+    }
+}
+
 pub struct EmbedderPipeGlobals {}
 impl Globals for EmbedderPipeGlobals {
     fn register<'s>(scope: &mut v8::PinScope<'s, '_>, global: v8::Local<v8::Object>) {
         Self::add(scope, global, "postMessage", post_message);
+        Self::add(scope, global, "getMessageCallback", get_message_callback);
         Self::add(scope, global, "setMessageCallback", set_message_callback);
     }
 
     fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)> {
-        vec![("postMessage", post_message.map_fn_to()), ("setMessageCallback", set_message_callback.map_fn_to())]
+        vec![("postMessage", post_message.map_fn_to()), ("getMessageCallback", get_message_callback.map_fn_to()), ("setMessageCallback", set_message_callback.map_fn_to())]
     }
 }
