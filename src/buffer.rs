@@ -77,7 +77,9 @@ pub struct ZeroCopyBuf<'s> {
 impl<'s> ZeroCopyBuf<'s> {
     /// Attempts to extract a zero-copy slice from a v8::Value
     /// 
-    /// SAFETY: This API should only be called from within callbacks with DisallowJavascriptExecutionScope
+    /// SAFETY: 
+    /// - This API should only be called from within callbacks with DisallowJavascriptExecutionScope
+    /// - Do not attempt to replace the underlying slice whatsoever, only mutate
     pub fn try_from_v8(
         _scope: &mut v8::PinnedRef<'_, v8::DisallowJavascriptExecutionScope<'_, 's, v8::HandleScope<'_>>>,
         value: v8::Local<'s, v8::Value>,

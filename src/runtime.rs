@@ -277,47 +277,6 @@ impl JsRuntime {
     /// 
     /// The returned oneshot channel must be polled to yield the ending result
     pub fn execute_main_module(&mut self, path: &str) -> Result<oneshot::Receiver<Result<(), v8::Global<v8::Value>>>, crate::Error> {
-        /*let module_rx = {
-        }; // scope should be dropped at this point
-
-        // Wait for module exec
-        tokio::pin!(module_rx);
-
-        loop {
-            tokio::select! {
-                res = &mut module_rx => {
-                    match res {
-                        Ok(Ok(_)) => break, // we're done the initial evaluation step
-                        Ok(Err(err)) => {
-                            v8::scope!(let scope, &mut self.isolate);
-                            let global_context = v8::Local::new(scope, &self.global_context);
-                            let context = v8::Local::new(scope, global_context);
-                            let scope = &mut v8::ContextScope::new(scope, context);
-
-                            let err = v8::Local::new(scope, err);
-                            return Err(Self::local_to_error(scope, err).into());
-                        },
-                        Err(_) => return Err("Tracker dropped".into()),
-                    }
-                }
-                status = self.tick() => {
-                    if status == EventLoopStatus::Idle {
-                        return Err(format!("Deadlock in {}", path).into());
-                    } else if status != EventLoopStatus::Ok {
-                        return Err(status.repr().into())
-                    }
-                }
-            }
-        }
-
-        // Wait for event loop to be Idle
-        loop {
-            let state = self.tick().await;
-            if state == EventLoopStatus::Idle { return Ok(()) }
-            else if state == EventLoopStatus::Ok { continue }
-            return Err(state.repr().into())
-        }*/
-
         v8::scope!(let scope, &mut self.isolate);
         let global_context = v8::Local::new(scope, &self.global_context);
         let context = v8::Local::new(scope, global_context);
@@ -502,6 +461,7 @@ impl JsRuntime {
                 let context = v8::Local::new(scope, &self.global_context);
                 let mut context_scope = v8::ContextScope::new(scope, context);
                 item.handler.handle(&mut context_scope, item.raw);
+                context_scope.perform_microtask_checkpoint();
             }
         }
 

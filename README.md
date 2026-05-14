@@ -5,9 +5,10 @@ Neptune is the work-in-progress experimental JS runtime for cases that need stri
 ## Supported/Implemented APIs
 
 - `setTimeout` / `setInterval` / `clearTimeout` / `clearInterval`
+- `performance.now`
 - `console.log`/`console.log` (rest of Console API is WIP)
 - `structuredClone` (partial, DOMException not yet supported)
-- `TextEncoder`
+- `TextEncoder`, `TextDecoder`
 
 ## Embedder Pipe API
 
@@ -26,4 +27,4 @@ To allow for communication between the embedder host and the underlying javascri
 
 ## TODO APIS
 
-- `TextDecoder`
+- `btoa`, `atob`

@@ -8,10 +8,12 @@ console.log(new Promise((resolve) => resolve(123)))
 // Encoder API (Encode)
 let s = "hello world"
 let enc = new TextEncoder()
+let dec = new TextDecoder()
 let ui8 = enc.encode(s)
-console.log(ui8)
+console.log(ui8, dec.decode(ui8))
 enc.encodeInto("bob", ui8)
-console.log(ui8)
+console.log(ui8, dec.decode(ui8))
+console.log(Intl, Temporal)
 
 // Message test =============
 

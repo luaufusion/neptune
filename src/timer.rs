@@ -41,7 +41,6 @@ impl ItemHandler {
 
                 v8::tc_scope!(let scope, scope); // ensure we run everything from here in a try-catch scope
                 cb.call(scope, recv, &args);
-                scope.perform_microtask_checkpoint();
             },
             Self::RepeatCall { cb, args } => {
                 // Requeue's item handler
@@ -56,7 +55,6 @@ impl ItemHandler {
 
                 v8::tc_scope!(let scope, scope); // ensure we run everything from here in a try-catch scope
                 cb.call(scope, recv, &args);
-                scope.perform_microtask_checkpoint();
             },
             Self::RustCall { cb } => (cb)(scope, raw)
         }
