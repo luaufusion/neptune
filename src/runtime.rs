@@ -469,6 +469,20 @@ impl JsRuntime {
     }
 
     pub fn local_to_error<'s>(scope: &mut v8::PinScope<'s, '_>, r: v8::Local<'s, v8::Value>) -> String {
+        // helper func to extract stack traces
+        fn extract_stack_trace<'s>(scope: &mut v8::PinScope<'s, '_>, exception: v8::Local<'s, v8::Value>) -> Option<String> {
+            if let Some(obj) = exception.to_object(scope) {
+                let stack_key = v8::String::new(scope, "stack").unwrap();
+                if let Some(stack) = obj.get(scope, stack_key.into()) {
+                    if !stack.is_undefined() {
+                        return Some(format!("{}", stack.to_rust_string_lossy(scope)));
+                    }
+                }
+            }
+
+            return None
+        }
+
         if let Some(st) = extract_stack_trace(scope, r) {
             st
         } else {
@@ -530,7 +544,7 @@ fn on_module_async_error<'s>(
 }
 
 // v8 will call this for every promise that has been rejected but unhandled
-pub unsafe extern "C" fn promise_reject_callback(message: v8::PromiseRejectMessage) {
+unsafe extern "C" fn promise_reject_callback(message: v8::PromiseRejectMessage) {
     let cbs = std::pin::pin!(unsafe { v8::CallbackScope::new(&message) });
     let scope = &mut cbs.init();
     let log_cb = {
@@ -551,17 +565,4 @@ pub unsafe extern "C" fn promise_reject_callback(message: v8::PromiseRejectMessa
         }
         _ => {}
     }
-}
-
-fn extract_stack_trace<'s>(scope: &mut v8::PinScope<'s, '_>, exception: v8::Local<'s, v8::Value>) -> Option<String> {
-    if let Some(obj) = exception.to_object(scope) {
-        let stack_key = v8::String::new(scope, "stack").unwrap();
-        if let Some(stack) = obj.get(scope, stack_key.into()) {
-            if !stack.is_undefined() {
-                return Some(format!("{}", stack.to_rust_string_lossy(scope)));
-            }
-        }
-    }
-
-    return None
 }
