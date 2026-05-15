@@ -17,6 +17,10 @@ pub(crate) mod sealed {
 }
 
 pub fn v8_backing_store_to_vec(bs: SharedRef<v8::BackingStore>, offset: usize, len: usize) -> Vec<u8> {
+    if offset + len > bs.len() {
+        return Vec::new(); 
+    }
+
     let dest = match bs.data() {
         Some(ptr) => {
             let p = ptr.as_ptr() as *const u8;
@@ -63,6 +67,35 @@ pub fn v8_new_array_buffer<'s, 'i, T: sealed::CreateBuffer>(
     }
     let bs = v8_create_backing_store(scope, buf, buf_len);
     v8::ArrayBuffer::with_backing_store(scope, &bs.make_shared())
+}
+
+/// A safe wrapper around a Vec<u8> that has been copied from V8 ArrayBuffer memory.
+pub struct CopiedBuffer(pub Vec<u8>);
+
+impl CopiedBuffer {
+    /// Attempts to copy a buffer from a v8::Value
+    pub fn try_from_v8<'s>(
+        _scope: &mut v8::PinScope<'s, '_>,
+        value: v8::Local<'s, v8::Value>,
+    ) -> Option<Self> {
+        if value.is_array_buffer_view() {
+            let view = v8::Local::<v8::ArrayBufferView>::try_from(value).unwrap();
+            let Some(backing_store) = view.get_backing_store() else {
+                return None; // detached view
+            };
+
+            return Some(CopiedBuffer(v8_backing_store_to_vec(backing_store, view.byte_offset(), view.byte_length())));
+        } else if value.is_array_buffer() {
+            let buffer = v8::Local::<v8::ArrayBuffer>::try_from(value).unwrap();
+            if buffer.was_detached() {
+                return None; // detached buffer
+            }
+            let backing_store = buffer.get_backing_store();
+            return Some(CopiedBuffer(v8_backing_store_to_vec(backing_store, 0, buffer.byte_length())));
+        }
+
+        None
+    }
 }
 
 /// A safe, zero-copy wrapper around V8 ArrayBuffer memory.

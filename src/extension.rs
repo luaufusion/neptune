@@ -4,7 +4,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use v8::disallow_javascript_execution_scope;
 
-use crate::buffer::ZeroCopyBuf;
+use crate::buffer::{CopiedBuffer, ZeroCopyBuf};
 
 pub enum NeptuneError {
     StaticTypeError(&'static str),
@@ -12,6 +12,7 @@ pub enum NeptuneError {
     DataError(v8::DataError),
     ExpectedArrayBufferOrArrayBufferView,
     ExpectedString,
+    ExpectedArrayBufferOrArrayBufferViewOrString,
 
     // encoding
     Base64Decode,
@@ -29,6 +30,7 @@ impl std::fmt::Display for NeptuneError {
             Self::TypeError(o) => f.write_str(&o),
             Self::DataError(d) => f.write_str(&d.to_string()),
             Self::ExpectedArrayBufferOrArrayBufferView => f.write_str("Expected ArrayBuffer or ArrayBufferView"),
+            Self::ExpectedArrayBufferOrArrayBufferViewOrString => f.write_str("Expected either a string, ArrayBuffer or ArrayBufferView"),
             Self::ExpectedString => f.write_str("Expected string"),
 
             // encoding
@@ -42,6 +44,13 @@ impl std::fmt::Display for NeptuneError {
     }
 }
 
+pub enum StringOrBuffer {
+    String(String),
+    Buffer(CopiedBuffer)
+}
+
+pub struct Skip {}
+
 /// Trait to convert from v8 to the type
 /// 
 /// Supported props (besides standard conversion from v8::Local's, Option<T>):
@@ -49,6 +58,9 @@ impl std::fmt::Display for NeptuneError {
 /// - bool
 /// - i32
 /// - f64
+/// - CopiedBuffer
+/// - StringOrBuffer
+/// - Skip
 pub trait FromV8<'s>: Sized {
     fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError>;
 }
@@ -69,6 +81,24 @@ impl<'s, T: FromV8<'s>> FromV8<'s> for Option<T> {
         } else {
             T::from_v8(scope, value).map(Some)
         }
+    }
+}
+
+impl<'s> FromV8<'s> for StringOrBuffer {
+    fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
+        match String::from_v8(scope, value) {
+            Ok(s) => return Ok(StringOrBuffer::String(s)),
+            Err(NeptuneError::ExpectedString) => {
+                return Ok(StringOrBuffer::Buffer(CopiedBuffer::from_v8(scope, value).map_err(|_| NeptuneError::ExpectedArrayBufferOrArrayBufferViewOrString)?))
+            },
+            Err(e) => return Err(e)
+        }
+    }
+}
+
+impl<'s> FromV8<'s> for Skip {
+    fn from_v8(_scope: &mut v8::PinScope<'s, '_>, _value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
+        Ok(Skip {})
     }
 }
 
@@ -108,6 +138,13 @@ impl<'s> FromV8<'s> for f64 {
     }
 }
 
+impl<'s> FromV8<'s> for CopiedBuffer {
+    fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
+        let buffer = CopiedBuffer::try_from_v8(scope, value).ok_or(NeptuneError::ExpectedArrayBufferOrArrayBufferView)?;
+        Ok(buffer)
+    }
+}
+
 /// Trait to convert from value into the type
 /// 
 /// Supported props (besides standard conversion from v8::Local's, Option<T>):
@@ -115,6 +152,7 @@ impl<'s> FromV8<'s> for f64 {
 /// - bool
 /// - i32
 /// - f64
+/// - Skip
 pub trait IntoV8<'s>: Sized {
     fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError>;
 }
@@ -165,6 +203,12 @@ impl<'s> IntoV8<'s> for f64 {
     }
 }
 
+impl<'s> IntoV8<'s> for Skip {
+    fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
+        Ok(v8::undefined(scope).into())
+    }
+}
+
 /// Trait to convert function arguments to arguments
 pub trait FromV8FunctionCallbackArguments<'s>: Sized {
     fn from_v8_fargs(
@@ -211,6 +255,7 @@ impl_from_v8_fargs!(A, B, C, D, E, F, G, H);
 /// Trait to convert from v8 to the type for cases that require javascript to be disabled (ZeroCopyBuf's etc)
 /// 
 /// Supported props (besides standard conversion for FromV8's):
+/// - ZeroCopyBuf
 pub trait FromV8NonReentrant<'s>: Sized {
     fn from_v8_non_reentrant(scope:  &mut v8::PinnedRef<'_, v8::DisallowJavascriptExecutionScope<'_, 's, v8::HandleScope<'_>>>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError>;
 }
