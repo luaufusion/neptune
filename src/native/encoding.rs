@@ -1,51 +1,17 @@
-use std::{borrow::Cow, fmt::Display};
+use std::borrow::Cow;
 
 use v8::{MapFnTo, OnFailure, disallow_javascript_execution_scope};
 
-use crate::{buffer::ZeroCopyBuf, extension::{Globals, wrap_raw}};
-
-#[allow(unused)]
-enum EncodingError {
-    Base64Decode,
-    InvalidEncodingLabel(String),
-    BufferTooLong,
-    ValueTooLarge,
-    BufferTooSmall,
-    DataInvalid,
-    ExpectedArrayBufferOrArrayBufferView,
-    ExpectedString,
-    DataError(v8::DataError),
-}
-
-impl EncodingError {
-    fn display(&self) -> Cow<'_, str> {
-        match self {
-            Self::Base64Decode => "Failed to decode base64".into(),
-            Self::InvalidEncodingLabel(s) => format!("The encoding label provided ('{s}') is invalid.").into(),
-            Self::BufferTooLong => "buffer exceeds maximum length".into(),
-            Self::ValueTooLarge => "Value too large to decode".into(),
-            Self::BufferTooSmall => "Provided buffer too small".into(),
-            Self::DataInvalid => "The encoded data is not valid".into(),
-            Self::DataError(s) => s.to_string().into(),
-            Self::ExpectedArrayBufferOrArrayBufferView => "Expected ArrayBuffer or ArrayBufferView".into(),
-            Self::ExpectedString => "Expected string".into(),
-        }
-    }
-}
-
-impl Display for EncodingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.display())
-    }
-}
+use crate::{buffer::ZeroCopyBuf, extension::{Globals, NeptuneError, wrap, wrap_nonreentrant, wrap_raw}};
 
 fn text_encode_impl<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     args: v8::FunctionCallbackArguments<'s>, 
     retval: v8::ReturnValue,
 ) {
-    wrap_raw::<_, EncodingError>(scope, args, retval, |scope, args, mut retval| {
-        let text = v8::Local::<v8::String>::try_from(args.get(0)).map_err(EncodingError::DataError)?;
+    // NOTE: This uses a manual impl for performance
+    wrap_raw::<_, NeptuneError>(scope, args, retval, |scope, args, mut retval| {
+        let text = v8::Local::<v8::String>::try_from(args.get(0)).map_err(NeptuneError::DataError)?;
         let byte_len = text.utf8_length(scope);
 
         // encode needs to create the arraybuffer
@@ -54,7 +20,7 @@ fn text_encode_impl<'s>(
         if byte_len > 0 {
             disallow_javascript_execution_scope!(let scope, scope, OnFailure::ThrowOnFailure);
 
-            let mut buffer = ZeroCopyBuf::try_from_v8(scope, new_ab.into()).ok_or(EncodingError::ExpectedArrayBufferOrArrayBufferView)?;
+            let mut buffer = ZeroCopyBuf::try_from_v8(scope, new_ab.into()).ok_or(NeptuneError::ExpectedArrayBufferOrArrayBufferView)?;
 
             text.write_utf8_v2(
                 scope,
@@ -77,13 +43,13 @@ fn text_encode_into_impl<'s>(
     args: v8::FunctionCallbackArguments<'s>, 
     retval: v8::ReturnValue,
 ) {
-    wrap_raw::<_, EncodingError>(scope, args, retval, |scope, args, mut retval| {
-        let text = v8::Local::<v8::String>::try_from(args.get(0)).map_err(EncodingError::DataError)?;
+    wrap_raw::<_, NeptuneError>(scope, args, retval, |scope, args, mut retval| {
+        let text = v8::Local::<v8::String>::try_from(args.get(0)).map_err(NeptuneError::DataError)?;
 
         let (chars_read, bytes_written) = {
             disallow_javascript_execution_scope!(let scope, scope, OnFailure::ThrowOnFailure);
 
-            let mut buffer = ZeroCopyBuf::try_from_v8(scope, args.get(1)).ok_or(EncodingError::ExpectedArrayBufferOrArrayBufferView)?;
+            let mut buffer = ZeroCopyBuf::try_from_v8(scope, args.get(1)).ok_or(NeptuneError::ExpectedArrayBufferOrArrayBufferView)?;
 
             let mut chars_read = 0;
 
@@ -117,14 +83,10 @@ fn text_decode_parse_label<'s>(
     args: v8::FunctionCallbackArguments<'s>, 
     retval: v8::ReturnValue,
 ) {
-    wrap_raw::<_, EncodingError>(scope, args, retval, |scope, args, mut retval| {
-        let label = v8::Local::<v8::String>::try_from(args.get(1))
-            .map_err(EncodingError::DataError)?
-            .to_rust_string_lossy(scope);
-
+    wrap(scope, args, retval, |scope, (label,): (String,)| {
         // MDN says to throw a RangeError "if the value of label is unknown, or is one of the values leading to a 'replacement' decoding algorithm ("iso-2022-cn" or "iso-2022-cn-ext")."
         let encoding = encoding_rs::Encoding::for_label_no_replacement(label.as_bytes())
-            .ok_or_else(|| EncodingError::InvalidEncodingLabel(label))?;
+            .ok_or_else(|| NeptuneError::InvalidEncodingLabel(label))?;
 
         let encoding_str = encoding.name().to_lowercase();
 
@@ -133,11 +95,9 @@ fn text_decode_parse_label<'s>(
             &encoding_str.as_ref(),
             v8::NewStringType::Normal,
             )
-            .ok_or(EncodingError::DataInvalid)?;
+            .ok_or(NeptuneError::DataInvalid)?;
         
-        retval.set(s.into());
-
-        Ok(())
+        Ok(s)
     });
 }
 
@@ -146,25 +106,14 @@ fn text_decode_impl<'s>(
     args: v8::FunctionCallbackArguments<'s>,
     retval: v8::ReturnValue,
 ) {
-    wrap_raw::<_, EncodingError>(scope, args, retval, |scope, args, mut retval| {
+    wrap_nonreentrant(scope, args, retval, |scope, (buffer, label, fatal, ignore_bom): (ZeroCopyBuf, String, bool, bool)| {
         // args.get(0) -> Buffer (Uint8Array/ArrayBuffer)
         // args.get(1) -> Label (String)
         // args.get(2) -> fatal (Bool)
         // args.get(3) -> ignoreBOM (Bool)
         
-        let label = v8::Local::<v8::String>::try_from(args.get(1))
-            .map_err(EncodingError::DataError)?
-            .to_rust_string_lossy(scope);
-        let fatal = args.get(2).is_true();
-        let ignore_bom = args.get(3).is_true();
-
         // fast path from deno bc im too lazy and deno has a perfectly working one
         if label == "utf-8" || label == "utf8" || label == "unicode-1-1-utf-8" {
-            disallow_javascript_execution_scope!(let scope, scope, OnFailure::ThrowOnFailure);
-
-            let buffer = ZeroCopyBuf::try_from_v8(scope, args.get(0))
-            .ok_or(EncodingError::ExpectedArrayBufferOrArrayBufferView)?;
-
             if buffer.is_ascii() {
                 // ASCII fast path. Pure ASCII inputs (the dominant real-world case for
                 // HTTP/JSON bodies, file reads, etc.) are valid UTF-8 with no BOM, so we
@@ -175,8 +124,8 @@ fn text_decode_impl<'s>(
                 &buffer,
                 v8::NewStringType::Normal,
                 )
-                .ok_or(EncodingError::BufferTooLong)?;
-                retval.set(s.into());
+                .ok_or(NeptuneError::BufferTooLong)?;
+                return Ok(s.into());
             } else {
                 let buf = if !ignore_bom
                     && buffer.len() >= 3
@@ -191,7 +140,7 @@ fn text_decode_impl<'s>(
 
                 if fatal {
                     // If fatal, we need to validate for utf8
-                    std::str::from_utf8(buf).map_err(|_| EncodingError::DataInvalid)?;
+                    std::str::from_utf8(buf).map_err(|_| NeptuneError::DataInvalid)?;
                 }
 
                 // If `String::new_from_utf8()` returns `None`, this means that the
@@ -202,16 +151,14 @@ fn text_decode_impl<'s>(
                 // - https://encoding.spec.whatwg.org/#dom-textdecoder-decode
                 // - https://github.com/denoland/deno/issues/6649
                 // - https://github.com/v8/v8/blob/d68fb4733e39525f9ff0a9222107c02c28096e2a/include/v8.h#L3277-L3278
-                let text = v8::String::new_from_utf8(scope, buf, v8::NewStringType::Normal).ok_or(EncodingError::BufferTooLong)?;
-                retval.set(text.into())
+                let text = v8::String::new_from_utf8(scope, buf, v8::NewStringType::Normal).ok_or(NeptuneError::BufferTooLong)?;
+                return Ok(text.into())
             }
-
-            return Ok(());
         }
 
         // fall back to using encoding_rs which handles BOM stripping and replacement characters internally.
         let encoding = encoding_rs::Encoding::for_label(label.as_bytes())
-            .ok_or_else(|| EncodingError::InvalidEncodingLabel(label))?;
+            .ok_or_else(|| NeptuneError::InvalidEncodingLabel(label))?;
 
         let mut decoder = if ignore_bom {
             encoding.new_decoder_without_bom_handling()
@@ -219,32 +166,23 @@ fn text_decode_impl<'s>(
             encoding.new_decoder()
         };
 
-        {
-            disallow_javascript_execution_scope!(let scope, scope, OnFailure::ThrowOnFailure);
+        // Calculate the maximum possible size for the output string as encoding_rs uses string capacity as limit of decoding
+        let max_len = decoder.max_utf8_buffer_length(buffer.len()).unwrap_or(0);
+        let mut output = String::with_capacity(max_len);
 
-            let buffer = ZeroCopyBuf::try_from_v8(scope, args.get(0))
-            .ok_or(EncodingError::ExpectedArrayBufferOrArrayBufferView)?;
+        let (result, _read, had_errors) = decoder.decode_to_string(&buffer, &mut output, true);
 
-            // Calculate the maximum possible size for the output string as encoding_rs uses string capacity as limit of decoding
-            let max_len = decoder.max_utf8_buffer_length(buffer.len()).unwrap_or(0);
-            let mut output = String::with_capacity(max_len);
-
-            let (result, _read, had_errors) = decoder.decode_to_string(&buffer, &mut output, true);
-
-            if fatal && result == encoding_rs::CoderResult::InputEmpty && had_errors {
-                return Err(EncodingError::DataInvalid);
-            }
-
-            let v8_string = v8::String::new_from_utf8(
-                scope, 
-                output.as_bytes(), 
-                v8::NewStringType::Normal
-            ).ok_or(EncodingError::ValueTooLarge)?;
-
-            retval.set(v8_string.into());
+        if fatal && result == encoding_rs::CoderResult::InputEmpty && had_errors {
+            return Err(NeptuneError::DataInvalid);
         }
 
-        Ok(())
+        let v8_string = v8::String::new_from_utf8(
+            scope, 
+            output.as_bytes(), 
+            v8::NewStringType::Normal
+        ).ok_or(NeptuneError::ValueTooLarge)?;
+
+        Ok(v8_string)
     });
 }
 

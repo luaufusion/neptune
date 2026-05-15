@@ -1,5 +1,6 @@
 use std::{rc::Rc, time::Duration};
 
+use futures::FutureExt;
 use neptune::{fsw::FilesystemWrapper, native::RegisterAll, runtime::{ConsoleLogMode, EventLoopStatus, JsRuntime, LogMessage, PipedMessage}, runtime_snapshotter::NeptuneSnapshot, timer::ItemHandler};
 use rust_embed::Embed;
 use tokio::{runtime::LocalOptions, sync::mpsc};
@@ -84,6 +85,7 @@ fn main() {
         };
 
         tokio::pin!(handle);
+        let mut handle = handle.fuse();
 
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
 
