@@ -31,7 +31,7 @@ fn set_timeout<'s>(
     };
 
     let id = IsolateState::with_mut(scope, |state| {
-        state.queue_stream_mut().add(handler, std::time::Duration::from_millis(delay_ms as u64))
+        state.queue_stream_mut().add(handler, std::time::Duration::from_millis(delay_ms as u64), false)
     });
 
     retval.set(v8::Integer::new(scope, id as i32).into());
@@ -60,13 +60,13 @@ fn set_interval<'s>(
         extra_args.push(v8::Global::new(scope, args.get(i)));
     }
 
-    let handler = ItemHandler::RepeatCall {
+    let handler = ItemHandler::Call {
         cb: v8::Global::new(scope, callback),
         args: extra_args, 
     };
 
     let id = IsolateState::with_mut(scope, |state| {
-        state.queue_stream_mut().add(handler, std::time::Duration::from_millis(delay_ms as u64))
+        state.queue_stream_mut().add(handler, std::time::Duration::from_millis(delay_ms as u64), true)
     });
 
     retval.set(v8::Integer::new(scope, id as i32).into());

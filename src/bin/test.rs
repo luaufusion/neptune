@@ -32,10 +32,10 @@ fn main() {
         // Push a RustCall in
         rt.queue_stream().add(ItemHandler::RustCall { cb: Box::new(|_scope, item| {
             println!("[Rust] RustCall on item {item:?}")
-        }) }, Duration::from_secs(2));
+        }) }, Duration::from_secs(2), false);
         rt.queue_stream().add(ItemHandler::RustCall { cb: Box::new(|_scope, item| {
             println!("[Rust] RustCall v2 on item {item:?}");
-        }) }, Duration::from_secs(5));
+        }) }, Duration::from_secs(5), false);
 
         // Init a pipe for test
         let (tx, mut rx) = mpsc::unbounded_channel::<PipedMessage>();

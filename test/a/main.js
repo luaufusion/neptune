@@ -74,6 +74,6 @@ let cid = setInterval(() => {
 
 // rest of tests
 let r0 = await timer.tick()
-console.log("a", r0)
+console.log("a", r0, performance.now())
 let r = await timer.tick()
-console.log("b", r)
+console.log("b", r, performance.now())
