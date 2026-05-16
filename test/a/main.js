@@ -29,6 +29,11 @@ let view = new Uint8Array(ab);
 view[1] = 2
 postMessage(view)
 
+// async test ================
+console.log("sleep")
+let sleepRet = await testSleepAsync(5)
+console.log("sleep done", sleepRet)
+
 // Timer test ================
 class Ticker {
     constructor(n) {

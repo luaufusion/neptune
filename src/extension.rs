@@ -5,6 +5,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use v8::disallow_javascript_execution_scope;
 
 use crate::buffer::{CopiedBuffer, ZeroCopyBuf};
+use crate::state::{IsolateState, OpResolver};
 
 pub enum NeptuneError {
     StaticTypeError(&'static str),
@@ -333,6 +334,89 @@ pub fn wrap<'s, Func, FuncArgs, FuncRet>(
         let ret = func(scope, args)?;
         let rv = ret.into_v8(scope)?;
         retval.set(rv);
+        Ok::<_, NeptuneError>(())
+    })
+}
+
+/// Helper method to wrap a async function
+pub fn wrap_async<'s, Func, FuncArgs, Fut, FuncRet>(
+    scope: &mut v8::PinScope<'s, '_>,
+    args: v8::FunctionCallbackArguments<'s>,
+    retval: v8::ReturnValue,
+    func: Func, 
+) 
+    where Func: FnOnce(&mut v8::PinScope<'s, '_>, FuncArgs) -> Result<Fut, NeptuneError>,
+    Fut: Future<Output = Result<FuncRet, NeptuneError>> + 'static,
+    FuncArgs: FromV8FunctionCallbackArguments<'s>,
+    FuncRet: for<'a> IntoV8<'a> + 'static,
+{
+    wrap_raw(scope, args, retval, |scope, args, mut retval| {
+        let args = FuncArgs::from_v8_fargs(scope, &args, 0)?;
+        let ret = func(scope, args)?;
+
+        // Create new promise
+        let resolver = v8::PromiseResolver::new(scope).unwrap();
+        let promise = resolver.get_promise(scope);
+        retval.set(promise.into());
+        let global_resolver = v8::Global::new(scope, resolver);
+
+        let wrapper_cb = async move {
+            let resp = ret.await;
+
+            struct InnerResolver<FuncRet> {
+                f: Result<FuncRet, NeptuneError>,
+                global_resolver: v8::Global<v8::PromiseResolver>
+            }
+
+            impl<FuncRet> OpResolver for InnerResolver<FuncRet> 
+            where 
+                FuncRet: for<'a> IntoV8<'a> + 'static 
+            {
+                fn resolve<'s>(self: Box<Self>, scope: &mut v8::PinScope<'s, '_>) {
+                    let resolver = v8::Local::new(scope, self.global_resolver);
+                    match self.f {
+                        Ok(data) => {
+                            // Convert the data into V8 using the fresh, active scope!
+                            match data.into_v8(scope) {
+                                Ok(val) => {
+                                    resolver.resolve(scope, val).unwrap();
+                                }
+                                Err(e) => {
+                                    let Some(msg) = v8::String::new(scope, &e.to_string()) else {
+                                        return;
+                                    };
+                                    let error = v8::Exception::type_error(scope, msg);
+                                    resolver.reject(scope, error).unwrap();
+                                    return;
+                                }
+                            };
+                        }
+                        Err(e) => {
+                            let Some(msg) = v8::String::new(scope, &e.to_string()) else {
+                                return;
+                            };
+                            let error = v8::Exception::type_error(scope, msg);
+                            resolver.reject(scope, error).unwrap();
+                        }
+                    }
+                }
+            }
+
+            let boxed: Box<dyn OpResolver> = Box::new(InnerResolver {
+                f: resp,
+                global_resolver
+            });
+
+            boxed
+        };
+        
+        {
+            let state = scope.get_slot::<IsolateState>().unwrap();
+            state.pending_ops.push(Box::pin(wrapper_cb));
+        }
+
+        //let rv = ret.into_v8(scope)?;
+        //retval.set(rv);
         Ok::<_, NeptuneError>(())
     })
 }

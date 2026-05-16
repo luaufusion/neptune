@@ -1,15 +1,14 @@
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 
-use tokio::sync::{mpsc, oneshot};
-use crate::{fsw::FilesystemWrapper, module::ModuleRegistry, runtime::{LogMessage, PipedMessage, Value}, timer::QueueStream};
+use futures::stream::FuturesUnordered;
+use tokio::sync::oneshot;
+use crate::{fsw::FilesystemWrapper, module::ModuleRegistry, runtime::{LogMessage, PipedMessage}, timer::QueueStream};
 pub type V8Result = Result<(), v8::Global<v8::Value>>;
 
-/// The message passed from Tokio background tasks back to V8
-/// 
-/// Internal to Neptune and is subject to change at any time
-pub struct AsyncResult {
-    pub promise_id: usize,
-    pub result: Result<Value, crate::Error>,
+pub type OpHandlerFut = futures::future::LocalBoxFuture<'static, Box<dyn OpResolver>>;
+
+pub trait OpResolver: 'static {
+    fn resolve<'s>(self: Box<Self>, scope: &mut v8::PinScope<'s, '_>);
 }
 
 /// Internal v8 isolate state
@@ -17,9 +16,7 @@ pub struct AsyncResult {
 /// Internal to Neptune and is subject to change at any time
 pub struct IsolateState {
     // scheduler
-    tx: mpsc::UnboundedSender<AsyncResult>,
-    promise_registry: HashMap<usize, v8::Global<v8::PromiseResolver>>,
-    next_promise_id: usize,
+    pub(super) pending_ops: FuturesUnordered<OpHandlerFut>,
 
     // modules
     modules: ModuleRegistry,
@@ -27,7 +24,7 @@ pub struct IsolateState {
     next_module_promise_tracker_id: u64,
     
     // timer
-    queue_stream: QueueStream,
+    pub(super) queue_stream: QueueStream,
 
     start_time: std::time::Instant,
 
@@ -50,11 +47,9 @@ impl IsolateState {
     /// Creates and attaches a new IsolateState
     /// 
     /// Should not be used outside of runtime
-    pub fn attach<'s>(isolate: &mut v8::Isolate, tx: mpsc::UnboundedSender<AsyncResult>, vfs: FilesystemWrapper) {
+    pub fn attach<'s>(isolate: &mut v8::Isolate, vfs: FilesystemWrapper) {
         isolate.set_slot(Self {
-            tx,
-            promise_registry: HashMap::new(),
-            next_promise_id: 1,
+            pending_ops: FuturesUnordered::new(),
             modules: ModuleRegistry::new(vfs),
             module_promise_tracker: HashMap::new(),
             next_module_promise_tracker_id: 0,
@@ -98,25 +93,9 @@ impl IsolateState {
         self.module_promise_tracker.remove(&module_id)
     }
 
-    /// Attach a promise resolver to the scheduler
-    #[inline(always)]
-    pub fn attach_to_scheduler(&mut self, global_resolver: v8::Global<v8::PromiseResolver>) -> (mpsc::UnboundedSender<AsyncResult>, usize) {
-        // Get next promise id to use
-        let id = self.next_promise_id;
-        self.next_promise_id += 1;
-        self.promise_registry.insert(id, global_resolver);
-        (self.tx.clone(), id)
-    }
-
-    /// Remove a promise resolver from the scheduler
-    #[inline(always)]
-    pub fn detach_from_scheduler(&mut self, promise_id: usize) -> Option<v8::Global<v8::PromiseResolver>> {
-        self.promise_registry.remove(&promise_id)
-    }
-
     /// Returns the number of pending loop refs (if loop refs > 0, the event loop will continue to wait for events and not break)
     pub fn pending_loop(&self) -> usize {
-        let mut base = self.promise_registry.len() + self.module_promise_tracker.len();
+        let mut base = self.pending_ops.len() + self.module_promise_tracker.len();
         if self.worker_to_embedder_cb.is_some() && self.embedder_to_worker_cb.is_some() {
             base += 1; // the worker to embedder pipe thats defined by the embedder creates a ref that keeps the event loop going
         }
@@ -125,12 +104,12 @@ impl IsolateState {
 
     /// Returns the number of 'work units' we have in motion
     pub fn pending_work_units(&self) -> usize {
-        self.promise_registry.len() + self.queue_stream.len()
+        self.pending_ops.len() + self.queue_stream.len()
     }
 
     /// Returns the number of pending promises in the registry
     pub fn pending_promises_in_registry(&self) -> usize {
-        self.promise_registry.len()
+        self.pending_ops.len()
     }
 
     /// Returns the number of pending module promises

@@ -3,14 +3,14 @@ use std::rc::Rc;
 use std::sync::Once;
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 use v8::{ContextOptions, CreateParams};
 
 use crate::buffer::v8_new_array_buffer;
 use crate::fsw::FilesystemWrapper;
 use crate::module::{create_module_origin, module_resolve_callback};
 use crate::runtime_snapshotter::NeptuneSnapshot;
-use crate::state::{AsyncResult, IsolateState};
+use crate::state::IsolateState;
 use crate::timer::QueueStream;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -67,51 +67,6 @@ impl EventLoopStatus {
     }
 }
 
-pub enum Value {
-    Global(v8::Global<v8::Value>),
-    BigIntU64(u64),
-    F64(f64),
-    String(String),
-    Buffer(Vec<u8>),
-    Undefined,
-    Null
-}
-
-impl Value {
-    pub fn to_v8<'s>(self, scope: &mut v8::PinScope<'s, '_, ()>) -> v8::Local<'s, v8::Value> {
-        match self {
-            Value::Global(gv) => {
-                let v8_result = v8::Local::new(scope, gv);
-                v8_result.into()
-            }
-            Value::BigIntU64(u) => {
-                let v8_result = v8::BigInt::new_from_u64(scope, u);
-                v8_result.into()
-            }
-            Value::F64(u) => {
-                let v8_result = v8::Number::new(scope, u);
-                v8_result.into()
-            }
-            Value::String(s) => {
-                let v8_result = v8::String::new(scope, &s).unwrap();
-                v8_result.into()
-            }
-            Value::Buffer(buf) => {
-                let v8_result = v8_new_array_buffer(scope, &buf, buf.len());
-                v8_result.into()
-            }
-            Value::Undefined => {
-                let v8_result = v8::undefined(scope);
-                v8_result.into()
-            },
-            Value::Null => {
-                let v8_result = v8::null(scope);
-                v8_result.into()
-            }
-        }
-    }
-}
-
 type V8Result = Result<(), v8::Global<v8::Value>>;
 
 // Ensure V8 is only initialized once per process
@@ -121,7 +76,6 @@ pub(super) static V8_INIT: Once = Once::new();
 pub struct JsRuntime {
     pub(super) isolate: v8::OwnedIsolate,
     pub(super) global_context: v8::Global<v8::Context>,
-    pub(super) rx: mpsc::UnboundedReceiver<AsyncResult>,
 }
 
 impl JsRuntime {
@@ -139,9 +93,6 @@ impl JsRuntime {
             v8::V8::initialize();
         });
 
-        // Create async comm channel for event loop handling
-        let (tx, rx) = mpsc::unbounded_channel::<AsyncResult>();
-
         // Create isolate and set state inside of a slot
         let params = params
             .external_references(Cow::Owned(snapshot.ext_refs()))
@@ -150,7 +101,7 @@ impl JsRuntime {
         let mut isolate = v8::Isolate::new(params);
 
         isolate.set_promise_reject_callback(promise_reject_callback);
-        IsolateState::attach(&mut isolate, tx, vfs);
+        IsolateState::attach(&mut isolate, vfs);
 
         // Create global context
         let global_context = {
@@ -162,7 +113,6 @@ impl JsRuntime {
         Self {
             isolate,
             global_context,
-            rx,
         }
     }
 
@@ -426,42 +376,21 @@ impl JsRuntime {
             return EventLoopStatus::Idle; // Return Idle to signal loop is done
         }
 
+        let IsolateState {
+            ref mut pending_ops,
+            ref mut queue_stream, // <-- Use your actual field name here instead of the method
+            ..
+        } = *self.isolate.get_slot_mut::<IsolateState>().unwrap();
+
         tokio::select! {
-            msg = self.rx.recv() => {
-                match msg {
-                    Some(msg) => {
-                        v8::scope!(let scope, &mut self.isolate);
-                        let context = v8::Local::new(scope, &self.global_context);
-                        let mut context_scope = v8::ContextScope::new(scope, context);
-
-                        let global_resolver_opt = IsolateState::with_mut(&mut context_scope, |state| {
-                            state.detach_from_scheduler(msg.promise_id)
-                        });
-
-                        if let Some(global_resolver) = global_resolver_opt {
-                            match msg.result {
-                                Ok(msg) => {
-                                    let resolver = v8::Local::new(&mut context_scope, global_resolver);
-                                    let v8_result = msg.to_v8(&mut context_scope);
-                                    resolver.resolve(&mut context_scope, v8_result.into());
-                                }
-                                Err(e) => {
-                                    let resolver = v8::Local::new(&mut context_scope, global_resolver);
-                                    let v8_result = v8::String::new(&mut context_scope, &e.to_string()).unwrap();
-                                    resolver.reject(&mut context_scope, v8_result.into());
-                                }
-                            }
-
-                            // Pump the microtask queue
-                            context_scope.perform_microtask_checkpoint();
-                        }
-                    }
-                    None => return EventLoopStatus::EventLoopUnexpectedlyClosed,
-                }
+            Some(item) = pending_ops.next() => {
+                v8::scope!(let scope, &mut self.isolate);
+                let context = v8::Local::new(scope, &self.global_context);
+                let mut context_scope = v8::ContextScope::new(scope, context);
+                item.resolve(&mut context_scope);
+                context_scope.perform_microtask_checkpoint();
             }
-            Some(item) = async { 
-                self.isolate.get_slot_mut::<IsolateState>().unwrap().queue_stream_mut().next().await 
-            } => {
+            Some(item) = queue_stream.next() => {
                 v8::scope!(let scope, &mut self.isolate);
                 let context = v8::Local::new(scope, &self.global_context);
                 let mut context_scope = v8::ContextScope::new(scope, context);
