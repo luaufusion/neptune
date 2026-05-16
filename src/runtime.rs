@@ -78,6 +78,9 @@ pub struct JsRuntime {
     pub(super) global_context: v8::Global<v8::Context>,
 }
 
+//impl !Send for JsRuntime {}
+//impl !Sync for JsRuntime {}
+
 impl JsRuntime {
     pub fn new(params: CreateParams, snapshot: NeptuneSnapshot, vfs: FilesystemWrapper) -> Self {
         assert!(!snapshot.globals.is_empty(), "Attempted to load a NeptuneSnapshot with no external references!");
@@ -170,7 +173,7 @@ impl JsRuntime {
                 PipedMessage::PostedString(s) => v8::String::new(scope, &s).unwrap().into()
             };
             let v = cb.call(scope, v8::undefined(scope).into(), &[args]);
-            scope.perform_microtask_checkpoint(); // perform microtask checkpoint
+            Self::pump_v8_message_loop(scope); // perform microtask checkpoint
             if v.is_none() {
                 if let Some(exception) = scope.exception() {
                     let msg = exception.to_rust_string_lossy(scope);
@@ -290,7 +293,7 @@ impl JsRuntime {
         match eval_result {
             Some(v) => {
                 // perform microtask checkpoint
-                scope.perform_microtask_checkpoint();   
+                Self::pump_v8_message_loop(scope);
 
                 // track any returned promises
                 if v.is_promise() {
@@ -309,7 +312,7 @@ impl JsRuntime {
             },
             None => {
                 // perform microtask checkpoint
-                scope.perform_microtask_checkpoint();    
+                Self::pump_v8_message_loop(scope);
 
                 if let Some(exception) = scope.exception() {
                     let msg = Self::local_to_error(scope, exception);
@@ -388,18 +391,28 @@ impl JsRuntime {
                 let context = v8::Local::new(scope, &self.global_context);
                 let mut context_scope = v8::ContextScope::new(scope, context);
                 item.resolve(&mut context_scope);
-                context_scope.perform_microtask_checkpoint();
+                Self::pump_v8_message_loop(&mut context_scope);
             }
             Some(item) = queue_stream.next() => {
                 v8::scope!(let scope, &mut self.isolate);
                 let context = v8::Local::new(scope, &self.global_context);
                 let mut context_scope = v8::ContextScope::new(scope, context);
                 item.handler.handle(&mut context_scope, item.raw);
-                context_scope.perform_microtask_checkpoint();
+                Self::pump_v8_message_loop(&mut context_scope);
             }
         }
 
         return EventLoopStatus::Ok; // mark this tick as a Ok
+    }
+
+    fn pump_v8_message_loop<'s>(scope: &mut v8::PinScope<'s, '_>) {
+        // SAFETY: A Neptune JsRuntime is single-threaded and not Send+Sync
+        v8::Platform::pump_message_loop(&v8::V8::get_current_platform(), scope,false);
+
+        v8::tc_scope!(let tc_scope, scope);
+
+        tc_scope.perform_microtask_checkpoint();
+        // TODO: handle the error here better
     }
 
     pub fn local_to_error<'s>(scope: &mut v8::PinScope<'s, '_>, r: v8::Local<'s, v8::Value>) -> String {
