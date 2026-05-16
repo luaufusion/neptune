@@ -46,7 +46,6 @@ pub type QueueStreamKey = u64;
 pub struct RawItem {
     pub final_expiry: Instant,
     pub key: QueueStreamKey,
-    // item metadata not used directly by QueueStream
     pub delay: Duration,
     // whether or not to repeat the interval
     pub repeat: bool,
