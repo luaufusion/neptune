@@ -1,9 +1,10 @@
 // Base test =================
 import * as a from "./b.js"
 console.log("GO", Reflect, eval, {a: "123"})
-console.log(Uint8Array, structuredClone)
+console.log(Uint8Array, structuredClone, encodeURIComponent, decodeURIComponent, String.fromCodePoint, Math, atob, btoa, Uint8Array.fromBase64)
 console.log({a:1}.a, structuredClone({a:1}) == {a:1})
 console.log(new Promise((resolve) => resolve(123)))
+console.log(Math.random())
 
 // Encoder API (Encode)
 let s = "hello world"
@@ -19,7 +20,7 @@ console.log(Intl, Temporal)
 const cb = (msg) => {
     console.log(`[Worker] ${msg}`)
     setMessageCallback(undefined)
-    if(getMessageCallback() !== undefined) throw new Error("getMessageCallback did not return undefined after setting to undefined")
+    if(getMessageCallback() !== null) throw new Error("getMessageCallback did not return undefined after setting to undefined")
 }
 setMessageCallback(cb)
 if(getMessageCallback() !== cb) throw new Error("getMessageCallback did not return the expected cb")

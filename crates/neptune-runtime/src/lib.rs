@@ -1,3 +1,5 @@
+extern crate self as neptune_runtime; // needed for op to be usable
+
 pub mod native;
 pub mod fsw;
 pub mod runtime;

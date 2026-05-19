@@ -61,3 +61,5 @@ class TextDecoder {
 
 globalThis.TextEncoder = TextEncoder
 globalThis.TextDecoder = TextDecoder
+globalThis.btoa = globalThis.bootstrap.btoa
+globalThis.atob = globalThis.bootstrap.atob

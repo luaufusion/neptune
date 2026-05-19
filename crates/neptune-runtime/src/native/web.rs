@@ -1,7 +1,5 @@
 // structuredClone is inspired by Deno
-use v8::{MapFnTo, ValueDeserializerHelper, ValueSerializerHelper};
-
-use crate::extension::Globals;
+use v8::{ValueDeserializerHelper, ValueSerializerHelper};
 
 struct SerializeDeserialize {}
 
@@ -144,13 +142,8 @@ fn native_structured_clone<'s>(
     return;
 }
 
-pub struct StructuredCloneGlobals {}
-impl Globals for StructuredCloneGlobals {
-    fn register<'s>(scope: &mut v8::PinScope<'s, '_>, global: v8::Local<v8::Object>) {
-        Self::add(scope, global, "structuredClone", native_structured_clone);
-    }
-
-    fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)> {
-        vec![("structuredClone", native_structured_clone.map_fn_to())]
+neptune_macros::define_globals! {
+    pub struct StructuredCloneGlobals {
+        structuredClone: native_structured_clone,
     }
 }

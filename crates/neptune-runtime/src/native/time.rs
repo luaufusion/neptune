@@ -1,12 +1,13 @@
-use v8::MapFnTo;
+use neptune_macros::op;
 
-use crate::{extension::Globals, state::IsolateState, timer::ItemHandler};
+use crate::{extension::{Globals, NeptuneError}, state::IsolateState, timer::ItemHandler};
 
+#[op(raw)]
 fn set_timeout<'s>(
     scope: &mut v8::PinScope<'s, '_>, 
     args: v8::FunctionCallbackArguments<'s>, 
     mut retval: v8::ReturnValue,
-) {
+) -> Result<(), NeptuneError> {
     // Extract out callbacj first
     let callback = match v8::Local::<v8::Function>::try_from(args.get(0)) {
         Ok(cb) => cb,
@@ -14,14 +15,16 @@ fn set_timeout<'s>(
             let msg = v8::String::new(scope, "First argument to setTimeout must be a function").unwrap();
             let exception = v8::Exception::type_error(scope, msg);
             scope.throw_exception(exception);
-            return;
+            return Ok(());
         }
     };
 
     let delay_ms = args.get(1).to_uint32(scope).map(|v| v.value()).unwrap_or(4).max(4);
 
-    let mut extra_args = Vec::with_capacity((args.length() - 2) as usize);
-    for i in 2..args.length() {
+    let length = args.length() as i32;
+    let extra_count = (length - 2).max(0) as usize;
+    let mut extra_args = Vec::with_capacity(extra_count);
+    for i in 2..length {
         extra_args.push(v8::Global::new(scope, args.get(i)));
     }
 
@@ -35,13 +38,15 @@ fn set_timeout<'s>(
     });
 
     retval.set(v8::Integer::new(scope, id as i32).into());
+    Ok(())
 }
 
+#[op(raw)]
 fn set_interval<'s>(
     scope: &mut v8::PinScope<'s, '_>, 
     args: v8::FunctionCallbackArguments<'s>, 
     mut retval: v8::ReturnValue,
-) {
+) -> Result<(), NeptuneError> {
     // Extract out callbacj first
     let callback = match v8::Local::<v8::Function>::try_from(args.get(0)) {
         Ok(cb) => cb,
@@ -49,14 +54,16 @@ fn set_interval<'s>(
             let msg = v8::String::new(scope, "First argument to setInterval must be a function").unwrap();
             let exception = v8::Exception::type_error(scope, msg);
             scope.throw_exception(exception);
-            return;
+            return Ok(());
         }
     };
 
     let delay_ms = args.get(1).to_uint32(scope).map(|v| v.value()).unwrap_or(4).max(4);
 
-    let mut extra_args = Vec::with_capacity((args.length() - 2) as usize);
-    for i in 2..args.length() {
+    let length = args.length() as i32;
+    let extra_count = (length - 2).max(0) as usize;
+    let mut extra_args = Vec::with_capacity(extra_count);
+    for i in 2..length {
         extra_args.push(v8::Global::new(scope, args.get(i)));
     }
 
@@ -70,49 +77,39 @@ fn set_interval<'s>(
     });
 
     retval.set(v8::Integer::new(scope, id as i32).into());
+    Ok(())
 }
 
 // The logic for clearInterval and clearTimeout are the same
+#[op]
 fn clear_timer<'s>(
     scope: &mut v8::PinScope<'s, '_>,
-    args: v8::FunctionCallbackArguments<'s>,
-    _: v8::ReturnValue,
-) {
-    let val = args.get(0);
-    if !val.is_number() {
-        return;
-    }
-
-    let id = val.to_uint32(scope).unwrap().value() as u64;
-
+    id: u32,
+) -> Result<(), NeptuneError> {
     // 2. Access IsolateState and cancel the timer
     IsolateState::with_mut(scope, |state| {
         // We don't need the returned Item, so we just let it drop
-        state.queue_stream_mut().cancel(id);
+        state.queue_stream_mut().cancel(id as u64);
     });
+    
+    Ok(())
 }
 
-pub struct TimerGlobals {}
-impl Globals for TimerGlobals {
-    fn register<'s>(scope: &mut v8::PinScope<'s, '_>, global: v8::Local<v8::Object>) {
-        Self::add(scope, global, "setTimeout", set_timeout);
-        Self::add(scope, global, "setInterval", set_interval);
-        Self::add(scope, global, "clearInterval", clear_timer);
-        Self::add(scope, global, "clearTimeout", clear_timer);
-    }
-
-    fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)> {
-        vec![("setTimeout", set_timeout.map_fn_to()), ("setInterval", set_interval.map_fn_to()), ("clearTimeout", clear_timer.map_fn_to()), ("clearInterval", clear_timer.map_fn_to())]
+neptune_macros::define_globals! {
+    pub struct TimerGlobals {
+        setTimeout: set_timeout,
+        setInterval: set_interval,
+        clearTimeout: clear_timer,
+        clearInterval: clear_timer,
     }
 }
 
+#[op]
 fn performance_now<'s>(
     scope: &mut v8::PinScope<'s, '_>,
-    _args: v8::FunctionCallbackArguments<'s>,
-    mut retval: v8::ReturnValue,
-) {
+) -> Result<f64, NeptuneError> {
     let elapsed = IsolateState::with(scope, |state| state.elapsed_ms());
-    retval.set(v8::Number::new(scope, elapsed).into());
+    Ok(elapsed)
 }
 
 pub struct PerformanceGlobals;
@@ -130,6 +127,7 @@ impl Globals for PerformanceGlobals {
     }
 
     fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)> {
+        use v8::MapFnTo;
         vec![("performance.now", performance_now.map_fn_to())]
     }
 }

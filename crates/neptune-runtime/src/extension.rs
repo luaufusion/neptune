@@ -50,18 +50,19 @@ pub enum StringOrBuffer {
     Buffer(CopiedBuffer)
 }
 
-pub struct Skip {}
+pub struct ByteString(pub Vec<u8>);
 
 /// Trait to convert from v8 to the type
-/// 
+///
 /// Supported props (besides standard conversion from v8::Local's, Option<T>):
 /// - String
 /// - bool
 /// - i32
+/// - u32
 /// - f64
 /// - CopiedBuffer
 /// - StringOrBuffer
-/// - Skip
+/// - ()
 pub trait FromV8<'s>: Sized {
     fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError>;
 }
@@ -97,9 +98,9 @@ impl<'s> FromV8<'s> for StringOrBuffer {
     }
 }
 
-impl<'s> FromV8<'s> for Skip {
+impl<'s> FromV8<'s> for () {
     fn from_v8(_scope: &mut v8::PinScope<'s, '_>, _value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
-        Ok(Skip {})
+        Ok(())
     }
 }
 
@@ -130,6 +131,12 @@ impl<'s> FromV8<'s> for i32 {
     }
 }
 
+impl<'s> FromV8<'s> for u32 {
+    fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
+        value.to_uint32(scope).map(|v| v.value()).ok_or(NeptuneError::StaticTypeError("Failed to convert u32 to number"))
+    }
+}
+
 impl<'s> FromV8<'s> for f64 {
     fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
         if !value.is_number() {
@@ -145,15 +152,17 @@ impl<'s> FromV8<'s> for CopiedBuffer {
         Ok(buffer)
     }
 }
-
 /// Trait to convert from value into the type
-/// 
+///
 /// Supported props (besides standard conversion from v8::Local's, Option<T>):
 /// - String
 /// - bool
 /// - i32
+/// - u32
 /// - f64
 /// - Skip
+/// - ByteString
+/// - ()
 pub trait IntoV8<'s>: Sized {
     fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError>;
 }
@@ -183,6 +192,14 @@ impl<'s> IntoV8<'s> for String {
     }
 }
 
+impl<'s> IntoV8<'s> for ByteString {
+    fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
+        let s = v8::String::new_from_one_byte(scope, &self.0, v8::NewStringType::Normal)
+            .ok_or(NeptuneError::DataInvalid)?;
+        Ok(s.into())
+    }
+}
+
 impl<'s> IntoV8<'s> for bool {
     fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
         let s = v8::Boolean::new(scope, self);
@@ -197,6 +214,13 @@ impl<'s> IntoV8<'s> for i32 {
     }
 }
 
+impl<'s> IntoV8<'s> for u32 {
+    fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
+        let s = v8::Integer::new_from_unsigned(scope, self);
+        Ok(s.into())
+    }
+}
+
 impl<'s> IntoV8<'s> for f64 {
     fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
         let s = v8::Number::new(scope, self);
@@ -204,7 +228,7 @@ impl<'s> IntoV8<'s> for f64 {
     }
 }
 
-impl<'s> IntoV8<'s> for Skip {
+impl<'s> IntoV8<'s> for () {
     fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
         Ok(v8::undefined(scope).into())
     }
@@ -217,6 +241,16 @@ pub trait FromV8FunctionCallbackArguments<'s>: Sized {
         args: &v8::FunctionCallbackArguments<'s>,
         start_index: usize,
     ) -> Result<Self, NeptuneError>;
+}
+
+impl<'s> FromV8FunctionCallbackArguments<'s> for () {
+    fn from_v8_fargs(
+        _scope: &mut v8::PinScope<'s, '_>,
+        _args: &v8::FunctionCallbackArguments<'s>,
+        _start_index: usize,
+    ) -> Result<Self, NeptuneError> {
+        Ok(())
+    }
 }
 
 macro_rules! impl_from_v8_fargs {
@@ -281,6 +315,16 @@ pub trait FromV8NonReentrantFunctionCallbackArguments<'s>: Sized {
         args: &v8::FunctionCallbackArguments<'s>,
         start_index: usize,
     ) -> Result<Self, NeptuneError>;
+}
+
+impl<'s> FromV8NonReentrantFunctionCallbackArguments<'s> for () {
+    fn from_v8_fargs_nonreentant(
+        _scope: &mut v8::PinnedRef<'_, v8::DisallowJavascriptExecutionScope<'_, 's, v8::HandleScope<'_>>>,
+        _args: &v8::FunctionCallbackArguments<'s>,
+        _start_index: usize,
+    ) -> Result<Self, NeptuneError> {
+        Ok(())
+    }
 }
 
 macro_rules! impl_from_v8_fargs_nr {
