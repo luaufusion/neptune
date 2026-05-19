@@ -1,6 +1,6 @@
 use neptune_macros::op;
 
-use crate::{extension::{Globals, NeptuneError}, state::IsolateState, timer::ItemHandler};
+use crate::{extension::{Globals, NeptuneError}, state_mut, state_ref, timer::ItemHandler};
 
 #[op(raw)]
 fn set_timeout<'s>(
@@ -33,9 +33,8 @@ fn set_timeout<'s>(
         args: extra_args, 
     };
 
-    let id = IsolateState::with_mut(scope, |state| {
-        state.queue_stream_mut().add(handler, std::time::Duration::from_millis(delay_ms as u64), false)
-    });
+    state_mut!(let state, scope);
+    let id = state.queue_stream_mut().add(handler, std::time::Duration::from_millis(delay_ms as u64), false);
 
     retval.set(v8::Integer::new(scope, id as i32).into());
     Ok(())
@@ -72,9 +71,8 @@ fn set_interval<'s>(
         args: extra_args, 
     };
 
-    let id = IsolateState::with_mut(scope, |state| {
-        state.queue_stream_mut().add(handler, std::time::Duration::from_millis(delay_ms as u64), true)
-    });
+    state_mut!(let state, scope);
+    let id = state.queue_stream_mut().add(handler, std::time::Duration::from_millis(delay_ms as u64), true);
 
     retval.set(v8::Integer::new(scope, id as i32).into());
     Ok(())
@@ -84,13 +82,10 @@ fn set_interval<'s>(
 #[op]
 fn clear_timer<'s>(
     scope: &mut v8::PinScope<'s, '_>,
-    id: u32,
+    id: u32, // TODO: fix this
 ) -> Result<(), NeptuneError> {
-    // 2. Access IsolateState and cancel the timer
-    IsolateState::with_mut(scope, |state| {
-        // We don't need the returned Item, so we just let it drop
-        state.queue_stream_mut().cancel(id as u64);
-    });
+    state_mut!(let state, scope);
+    state.queue_stream_mut().cancel(id as u64);
     
     Ok(())
 }
@@ -108,8 +103,8 @@ neptune_macros::define_globals! {
 fn performance_now<'s>(
     scope: &mut v8::PinScope<'s, '_>,
 ) -> Result<f64, NeptuneError> {
-    let elapsed = IsolateState::with(scope, |state| state.elapsed_ms());
-    Ok(elapsed)
+    state_ref!(let state, scope);
+    Ok(state.elapsed_ms())
 }
 
 pub struct PerformanceGlobals;

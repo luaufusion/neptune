@@ -2,7 +2,7 @@ use std::{borrow::Cow, collections::{HashMap, VecDeque}};
 
 use v8::MapFnTo;
 
-use crate::{extension::Globals, runtime::{ConsoleLogMode, LogMessage}, state::IsolateState};
+use crate::{extension::Globals, runtime::{ConsoleLogMode, LogMessage}, state_ref};
 
 // node
 const PRIMORDIALS: &str = include_str!("node/primordials.js");
@@ -94,11 +94,10 @@ fn bootstrap_console_log<'s>(
 
     let s = s.to_rust_string_lossy(scope);
 
-    IsolateState::with(scope, |state| {
-        if let Some(ref cb) = state.embedder_log_cb {
-            (cb)(LogMessage::ConsoleLog { msg: s, mode: clm});
-        }
-    });
+    state_ref!(let state, scope);
+    if let Some(ref cb) = state.embedder_log_cb {
+        (cb)(LogMessage::ConsoleLog { msg: s, mode: clm});
+    }
 }
 
 pub struct BootstrapGlobals {}

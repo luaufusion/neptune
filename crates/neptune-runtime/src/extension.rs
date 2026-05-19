@@ -5,7 +5,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use v8::disallow_javascript_execution_scope;
 
 use crate::buffer::{CopiedBuffer, ZeroCopyBuf};
-use crate::state::{IsolateState, OpResolver};
+use crate::state::OpResolver;
+use crate::state_ref;
 
 pub enum NeptuneError {
     StaticTypeError(&'static str),
@@ -455,7 +456,7 @@ pub fn wrap_async<'s, Func, FuncArgs, Fut, FuncRet>(
         };
         
         {
-            let state = scope.get_slot::<IsolateState>().unwrap();
+            state_ref!(let state, scope);
             state.pending_ops.push(Box::pin(wrapper_cb));
         }
 

@@ -62,20 +62,6 @@ impl IsolateState {
         });
     }
 
-    /// Run function `f` on the underlying IsolateState (immutable) from scope
-    #[inline(always)]
-    pub fn with<'s, R>(scope: &v8::PinScope<'s, '_, ()>, f: impl FnOnce(&IsolateState) -> R) -> R {
-        let state = scope.get_slot::<Self>().unwrap();
-        f(state)
-    }
-
-    /// Run function `f` on the underlying IsolateState (mutable) from scope
-    #[inline(always)]
-    pub fn with_mut<'s, R>(scope: &mut v8::PinScope<'s, '_, ()>, f: impl FnOnce(&mut IsolateState) -> R) -> R {
-        let state = scope.get_slot_mut::<Self>().unwrap();
-        f(state)
-    }
-
     /// Attach a promise tracker for a module
     /// 
     /// Returns the module id
@@ -164,3 +150,39 @@ impl IsolateState {
         elapsed_final
     }
 }  
+
+/// Extracts the IsolateState from a V8 scope immutably and binds it to a local variable.
+/// 
+/// Usage: `state_ref!(let my_state, scope);`
+#[macro_export]
+macro_rules! state_ref {
+    (let $name:ident, $scope:expr) => {
+        let $name = $scope
+        .get_slot::<$crate::state::IsolateState>()
+        .expect("IsolateState not attached");
+    };
+}
+
+/// Extracts the IsolateState from a V8 scope and binds it to a local variable.
+/// 
+/// Usage: `state_mut!(let my_state, scope);`
+#[macro_export]
+macro_rules! state_mut {
+    (let $name:ident, $scope:expr) => {
+        let $name = $scope
+        .get_slot_mut::<$crate::state::IsolateState>()
+        .expect("IsolateState not attached");
+    };
+}
+
+/// Extracts the IsolateState from a V8 scope rawly
+/// 
+/// Usage: `state_mut_raw!(scope);`
+#[macro_export]
+macro_rules! state_mut_raw {
+    ($scope:expr) => {
+        $scope
+        .get_slot_mut::<$crate::state::IsolateState>()
+        .expect("IsolateState not attached")
+    };
+}

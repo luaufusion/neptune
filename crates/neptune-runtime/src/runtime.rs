@@ -11,6 +11,7 @@ use crate::fsw::FilesystemWrapper;
 use crate::module::{create_module_origin, module_resolve_callback};
 use crate::runtime_snapshotter::NeptuneSnapshot;
 use crate::state::IsolateState;
+use crate::{state_mut, state_mut_raw, state_ref};
 use crate::timer::QueueStream;
 
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
@@ -131,70 +132,72 @@ impl JsRuntime {
     }
 
     pub fn queue_stream(&mut self) -> &mut QueueStream {
-        self.isolate.get_slot_mut::<IsolateState>().unwrap().queue_stream_mut()
+        state_mut_raw!(self.isolate).queue_stream_mut()
     }
 
     /// Set the callback to call when the worker posts a message for the embedder to see
     pub fn set_worker_to_embedder_cb(&mut self, cb: Option<Box<dyn FnMut(PipedMessage)>>) {
-        let iso_state = self.isolate.get_slot_mut::<IsolateState>().unwrap();
-        iso_state.worker_to_embedder_cb = cb;
+        state_mut!(let state, self.isolate);
+        state.worker_to_embedder_cb = cb;
     }
 
     /// Overrides the callback to call when the embedder posts a message for the worker to see
     pub fn get_embedder_to_worker_cb(&self) -> Option<v8::Global<v8::Function>> {
-        let iso_state = self.isolate.get_slot::<IsolateState>().unwrap();
-        iso_state.embedder_to_worker_cb.clone()
+        state_ref!(let state, self.isolate);
+        state.embedder_to_worker_cb.clone()
     }
 
     /// Overrides the callback to call when the embedder posts a message for the worker to see
     pub fn set_embedder_to_worker_cb(&mut self, cb: Option<v8::Global<v8::Function>>) {
-        let iso_state = self.isolate.get_slot_mut::<IsolateState>().unwrap();
-        iso_state.embedder_to_worker_cb = cb;
+        state_mut!(let state, self.isolate);
+        state.embedder_to_worker_cb = cb;
     }
 
     /// Set the callback to call when anything in the runtime wants to push a log event to the embedder
     pub fn set_embedder_log_cb(&mut self, cb: Option<Rc<dyn Fn(LogMessage)>>) {
-        let iso_state = self.isolate.get_slot_mut::<IsolateState>().unwrap();
-        iso_state.embedder_log_cb = cb;
+        state_mut!(let state, self.isolate);
+        state.embedder_log_cb = cb;
     }
 
     /// Push a message for the worker to see, does nothing if theres no embedder_to_worker callback
     pub fn push_message(&mut self, msg: PipedMessage) -> Result<(), crate::Error> {
-        let iso_state = self.isolate.get_slot_mut::<IsolateState>().unwrap();
-        if let Some(cb) = iso_state.embedder_to_worker_cb.clone() {
-            v8::scope!(let scope, &mut self.isolate);
-            let global_context = v8::Local::new(scope, &self.global_context);
-            let context = v8::Local::new(scope, global_context);
-            let scope = &mut v8::ContextScope::new(scope, context);
-            v8::tc_scope!(let scope, scope);
-            let cb = v8::Local::new(scope, cb);
-            let args = match msg {
-                PipedMessage::PostedBytes(buf) => v8_new_array_buffer(scope, &buf, buf.len()).into(),
-                PipedMessage::PostedString(s) => v8::String::new(scope, &s).unwrap().into()
-            };
-            let v = cb.call(scope, v8::undefined(scope).into(), &[args]);
-            Self::pump_v8_message_loop(scope); // perform microtask checkpoint
-            if v.is_none() {
-                if let Some(exception) = scope.exception() {
-                    let msg = exception.to_rust_string_lossy(scope);
-                    
-                    return Err(format!("Failed to compile: {msg}").into())
-                } else {
-                    return Err("Unknown error has occurred".into())
-                } 
-            }
-            Ok(())
-        } else {
-            Ok(())
+        let cb = {
+            state_ref!(let state, self.isolate);
+            state.embedder_to_worker_cb.clone()
+        };
+
+        if let Some(cb) = cb {
+            self.with_context(msg, |scope, msg| {
+                v8::tc_scope!(let scope, scope);
+                let cb = v8::Local::new(scope, cb);
+                let args = match msg {
+                    PipedMessage::PostedBytes(buf) => v8_new_array_buffer(scope, &buf, buf.len()).into(),
+                    PipedMessage::PostedString(s) => v8::String::new(scope, &s).unwrap().into()
+                };
+
+                let v = cb.call(scope, v8::undefined(scope).into(), &[args]);
+                Self::pump_v8_message_loop(scope); // perform microtask checkpoint
+                if v.is_none() {
+                    if let Some(exception) = scope.exception() {
+                        let msg = exception.to_rust_string_lossy(scope);
+                        return Err(format!("Failed to compile: {msg}"))
+                    } else {
+                        return Err("Unknown error has occurred".into())
+                    } 
+                }  
+                Ok(())
+            })?;
         }
+
+        Ok(())
     }
 
     /// Helper method to push a log event to the registered log callback
     /// 
     /// Mainly used by runtime but could be useful for embedders as well
     pub fn push_log_event(&self, evt: LogMessage) {
-        let iso_state = self.isolate.get_slot::<IsolateState>().unwrap();
-        if let Some(embedder_log_cb) = &iso_state.embedder_log_cb {
+        state_ref!(let state, self.isolate);
+        if let Some(embedder_log_cb) = &state.embedder_log_cb {
             (embedder_log_cb)(evt)
         }
     }
@@ -242,15 +245,16 @@ impl JsRuntime {
         v8::tc_scope!(let scope, scope);
 
         // Fetch the source code for the main entry point
-        let source_code = IsolateState::with(scope, |state| {
+        let source_code = {
+            state_ref!(let state, scope);
             match state.modules().vfs.get_file(path.to_string()) {
-                Ok(bytes) => return Ok(String::from_utf8_lossy(&bytes).into_owned()),
+                Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
                 Err(e) => {
-                    return Err(format!("Failed to read main module {}: {:?}", path, e));
+                    return Err(format!("Failed to read main module {}: {:?}", path, e).into());
                 }
             }
-        })?;
-
+        };
+        
         let code_v8 = v8::String::new(scope, &source_code).unwrap();
         let origin = create_module_origin(scope, &path, true); 
         let mut source = v8::script_compiler::Source::new(code_v8, Some(&origin));
@@ -272,10 +276,11 @@ impl JsRuntime {
         // Register the main module to ensure referrer is known when we instantiate the main module and start resolving dependencies
         let hash = main_module.get_identity_hash();
         let g_mod = v8::Global::new(scope, main_module);
-        IsolateState::with_mut(scope, |state| {
+        {
+            state_mut!(let state, scope);
             state.modules_mut().cache.insert(path.to_string(), g_mod);
             state.modules_mut().paths.insert(hash.into(), path.to_string());
-        });
+        }
 
         // Instantiate the main module itself
         if main_module.instantiate_module(scope, module_resolve_callback).is_none() {
@@ -328,9 +333,10 @@ impl JsRuntime {
     pub(crate) fn track_module_promise<'s>(scope: &mut v8::PinnedRef<'_, v8::TryCatch<'s, '_, v8::HandleScope<'_>>>, promise: v8::Local<'s, v8::Promise>) -> oneshot::Receiver<V8Result> {
         if promise.state() == v8::PromiseState::Pending {
             // if pending, attach a tracker so event loop stays alive, then set module promise then/catch handler
-            let (id, rx) = IsolateState::with_mut(scope, |state| {
+            let (id, rx) = {
+                state_mut!(let state, scope);
                 state.create_module_promise_tracker()
-            });
+            };
 
             let on_module_async_done_fn = v8::Function::builder(on_module_async_done)
             .data(v8::BigInt::new_from_u64(scope, id).into())
@@ -366,7 +372,7 @@ impl JsRuntime {
     pub async fn tick(&mut self) -> EventLoopStatus {
         // Check if we have pending promises
         let (pending, pending_mods, pending_work_units) = {
-            let state = self.isolate.get_slot::<IsolateState>().unwrap();
+            state_ref!(let state, self.isolate);
             (state.pending_loop(), state.pending_module_promises(), state.pending_work_units())
         };
 
@@ -383,7 +389,7 @@ impl JsRuntime {
             ref mut pending_ops,
             ref mut queue_stream, // <-- Use your actual field name here instead of the method
             ..
-        } = *self.isolate.get_slot_mut::<IsolateState>().unwrap();
+        } = *state_mut_raw!(self.isolate);
 
         tokio::select! {
             Some(item) = pending_ops.next() => {
@@ -447,20 +453,19 @@ fn on_module_async_done<'s>(
     args: v8::FunctionCallbackArguments<'s>,
     _rv: v8::ReturnValue,
 ) {
-    IsolateState::with_mut(scope, |state| {
-        if let Some(ref embedder_log_cb) = state.embedder_log_cb {
-            (embedder_log_cb)(LogMessage::DbgOnModuleAsyncDone);
-        }
+    state_mut!(let state, scope);
+    if let Some(ref embedder_log_cb) = state.embedder_log_cb {
+        (embedder_log_cb)(LogMessage::DbgOnModuleAsyncDone);
+    }
 
-        if args.data().is_big_int() {
-            let n = v8::Local::<v8::BigInt>::try_from(args.data()).unwrap();
-            let module_id = n.u64_value().0;
+    if args.data().is_big_int() {
+        let n = v8::Local::<v8::BigInt>::try_from(args.data()).unwrap();
+        let module_id = n.u64_value().0;
 
-            if let Some(tx) = state.remove_module_promise_tracker(module_id) {
-                let _ = tx.send(Ok(()));
-            }
+        if let Some(tx) = state.remove_module_promise_tracker(module_id) {
+            let _ = tx.send(Ok(()));
         }
-    });
+    }
 }
 
 /// When the module is error'd, on_module_async_error will be called
@@ -474,20 +479,19 @@ fn on_module_async_error<'s>(
     let error_val = args.get(0);
     let error_val = v8::Global::new(scope, error_val);
 
-    IsolateState::with_mut(scope, |state| {
-        if let Some(ref embedder_log_cb) = state.embedder_log_cb {
-            (embedder_log_cb)(LogMessage::DbgOnModuleAsyncError);
-        }
+    state_mut!(let state, scope);
+    if let Some(ref embedder_log_cb) = state.embedder_log_cb {
+        (embedder_log_cb)(LogMessage::DbgOnModuleAsyncError);
+    }
 
-        if args.data().is_big_int() {
-            let n = v8::Local::<v8::BigInt>::try_from(args.data()).unwrap();
-            let module_id = n.u64_value().0;
+    if args.data().is_big_int() {
+        let n = v8::Local::<v8::BigInt>::try_from(args.data()).unwrap();
+        let module_id = n.u64_value().0;
 
-            if let Some(tx) = state.remove_module_promise_tracker(module_id) {
-                let _ = tx.send(Err(error_val));
-            }
+        if let Some(tx) = state.remove_module_promise_tracker(module_id) {
+            let _ = tx.send(Err(error_val));
         }
-    });
+    }
 }
 
 // v8 will call this for every promise that has been rejected but unhandled
@@ -495,8 +499,8 @@ unsafe extern "C" fn promise_reject_callback(message: v8::PromiseRejectMessage) 
     let cbs = std::pin::pin!(unsafe { v8::CallbackScope::new(&message) });
     let scope = &mut cbs.init();
     let log_cb = {
-        let iso_state = scope.get_slot::<IsolateState>().unwrap();
-        let Some(ref log_cb) = iso_state.embedder_log_cb else {
+        state_ref!(let state, scope);
+        let Some(ref log_cb) = state.embedder_log_cb else {
             return;
         };
         log_cb.clone()

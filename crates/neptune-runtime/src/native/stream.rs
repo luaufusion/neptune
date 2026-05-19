@@ -1,25 +1,23 @@
 use neptune_macros::op;
-use crate::{extension::{NeptuneError, StringOrBuffer}, runtime::PipedMessage, state::IsolateState};
+use crate::{extension::{NeptuneError, StringOrBuffer}, runtime::PipedMessage, state_mut, state_ref};
 
 #[op]
 fn post_message<'s>(
     scope: &mut v8::PinScope<'s, '_>, 
     msg: StringOrBuffer,
 ) -> Result<(), NeptuneError> {
+    state_mut!(let state, scope);
     match msg {
         StringOrBuffer::Buffer(dest) => {
-            IsolateState::with_mut(scope, |state| {
-                if let Some(cb) = &mut state.worker_to_embedder_cb {
-                    (cb)(PipedMessage::PostedBytes(dest.0))
-                }
-            });
+            if let Some(cb) = &mut state.worker_to_embedder_cb {
+                (cb)(PipedMessage::PostedBytes(dest.0))
+            }
+
         }
         StringOrBuffer::String(dest) => {
-            IsolateState::with_mut(scope, |state| {
-                if let Some(cb) = &mut state.worker_to_embedder_cb {
-                    (cb)(PipedMessage::PostedString(dest))
-                }
-            });
+            if let Some(cb) = &mut state.worker_to_embedder_cb {
+                (cb)(PipedMessage::PostedString(dest))
+            }
         }
     }
 
@@ -38,15 +36,12 @@ fn set_message_callback<'s>(
             }
 
             let cb_func = v8::Global::new(scope, cb_func);
-
-            IsolateState::with_mut(scope, |state| {
-                state.embedder_to_worker_cb = Some(cb_func);
-            });
+            state_mut!(let state, scope);
+            state.embedder_to_worker_cb = Some(cb_func);
         }
         None => {
-            IsolateState::with_mut(scope, |state| {
-                state.embedder_to_worker_cb = None;
-            });
+            state_mut!(let state, scope);
+            state.embedder_to_worker_cb = None;
         }
     }
 
@@ -57,7 +52,7 @@ fn set_message_callback<'s>(
 fn get_message_callback<'s>(
     scope: &mut v8::PinScope<'s, '_>,
 ) -> Result<Option<v8::Local<'s, v8::Function>>, NeptuneError> {
-    let state = scope.get_slot::<IsolateState>().unwrap();
+    state_ref!(let state, scope);
     if let Some(cb) = &state.embedder_to_worker_cb {
         let local_cb = v8::Local::new(scope, cb);
         Ok(Some(local_cb))
