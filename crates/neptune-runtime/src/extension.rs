@@ -54,16 +54,6 @@ pub enum StringOrBuffer {
 pub struct ByteString(pub Vec<u8>);
 
 /// Trait to convert from v8 to the type
-///
-/// Supported props (besides standard conversion from v8::Local's, Option<T>):
-/// - String
-/// - bool
-/// - i32
-/// - u32
-/// - f64
-/// - CopiedBuffer
-/// - StringOrBuffer
-/// - ()
 pub trait FromV8<'s>: Sized {
     fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError>;
 }
@@ -83,6 +73,22 @@ impl<'s, T: FromV8<'s>> FromV8<'s> for Option<T> {
             Ok(None)
         } else {
             T::from_v8(scope, value).map(Some)
+        }
+    }
+}
+
+impl<'s, T: FromV8<'s>> FromV8<'s> for Vec<T> {
+    fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
+        match v8::Local::<v8::Array>::try_from(value) {
+            Ok(v) => {
+                let mut val = Vec::with_capacity(v.length() as usize);
+                for i in 0..v.length() {
+                    let elem = v.get_index(scope, i).ok_or(NeptuneError::StaticTypeError("failed to extract array elements due to internal error"))?;
+                    val.push(T::from_v8(scope, elem)?);
+                }
+                Ok(val)
+            },
+            Err(e) => Err(NeptuneError::DataError(e))
         }
     }
 }
@@ -153,6 +159,52 @@ impl<'s> FromV8<'s> for CopiedBuffer {
         Ok(buffer)
     }
 }
+
+impl<'s> FromV8<'s> for u8 {
+    fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
+        value.to_uint32(scope).map(|v| v.value() as u8).ok_or(NeptuneError::StaticTypeError("Failed to convert u8 to number"))
+    }
+}
+
+impl<'s> FromV8<'s> for u16 {
+    fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
+        value.to_uint32(scope).map(|v| v.value() as u16).ok_or(NeptuneError::StaticTypeError("Failed to convert u16 to number"))
+    }
+}
+
+impl<'s> FromV8<'s> for u64 {
+    fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
+        if value.is_big_int() {
+            let big_int = v8::Local::<v8::BigInt>::try_from(value).unwrap();
+            let (v, _) = big_int.u64_value();
+            return Ok(v);
+        }
+        value.to_integer(scope).map(|v| v.value() as u64).ok_or(NeptuneError::StaticTypeError("Failed to convert u64 to number"))
+    }
+}
+
+impl<'s> FromV8<'s> for i8 {
+    fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
+        value.int32_value(scope).map(|v| v as i8).ok_or(NeptuneError::StaticTypeError("Failed to convert i8 to number"))
+    }
+}
+
+impl<'s> FromV8<'s> for i16 {
+    fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
+        value.int32_value(scope).map(|v| v as i16).ok_or(NeptuneError::StaticTypeError("Failed to convert i16 to number"))
+    }
+}
+
+impl<'s> FromV8<'s> for i64 {
+    fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, NeptuneError> {
+        if value.is_big_int() {
+            let big_int = v8::Local::<v8::BigInt>::try_from(value).unwrap();
+            let (v, _) = big_int.i64_value();
+            return Ok(v);
+        }
+        value.integer_value(scope).ok_or(NeptuneError::StaticTypeError("Failed to convert i64 to number"))
+    }
+}
 /// Trait to convert from value into the type
 ///
 /// Supported props (besides standard conversion from v8::Local's, Option<T>):
@@ -183,6 +235,17 @@ impl<'s, T: IntoV8<'s>> IntoV8<'s> for Option<T> {
             Some(s) => s.into_v8(scope),
             None => Ok(v8::null(scope).into())
         }
+    }
+}
+
+impl<'s, T: IntoV8<'s>> IntoV8<'s> for Vec<T> {
+    fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
+        let v = v8::Array::new(scope, self.len() as i32);
+        for (i, val) in self.into_iter().enumerate() {
+            let elem = val.into_v8(scope)?;
+            v.set_index(scope, i as u32, elem);
+        }
+        Ok(v.into())
     }
 }
 
@@ -232,6 +295,48 @@ impl<'s> IntoV8<'s> for f64 {
 impl<'s> IntoV8<'s> for () {
     fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
         Ok(v8::undefined(scope).into())
+    }
+}
+
+impl<'s> IntoV8<'s> for u8 {
+    fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
+        let s = v8::Integer::new_from_unsigned(scope, self as u32);
+        Ok(s.into())
+    }
+}
+
+impl<'s> IntoV8<'s> for u16 {
+    fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
+        let s = v8::Integer::new_from_unsigned(scope, self as u32);
+        Ok(s.into())
+    }
+}
+
+impl<'s> IntoV8<'s> for u64 {
+    fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
+        let s = v8::BigInt::new_from_u64(scope, self);
+        Ok(s.into())
+    }
+}
+
+impl<'s> IntoV8<'s> for i8 {
+    fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
+        let s = v8::Integer::new(scope, self as i32);
+        Ok(s.into())
+    }
+}
+
+impl<'s> IntoV8<'s> for i16 {
+    fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
+        let s = v8::Integer::new(scope, self as i32);
+        Ok(s.into())
+    }
+}
+
+impl<'s> IntoV8<'s> for i64 {
+    fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, NeptuneError> {
+        let s = v8::BigInt::new_from_i64(scope, self);
+        Ok(s.into())
     }
 }
 

@@ -234,3 +234,122 @@ pub fn op(attr: TokenStream, item: TokenStream) -> TokenStream {
 
     expanded.into()
 }
+
+#[proc_macro_derive(FromV8)]
+pub fn derive_from_v8(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::DeriveInput);
+    let name = &input.ident;
+
+    let syn::Data::Struct(data_struct) = &input.data else {
+        return syn::Error::new_spanned(name, "FromV8 can only be derived for structs")
+            .to_compile_error()
+            .into();
+    };
+
+    let fields = match &data_struct.fields {
+        syn::Fields::Named(fields) => &fields.named,
+        _ => {
+            return syn::Error::new_spanned(name, "FromV8 can only be derived for structs with named fields")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let mut field_reads = Vec::new();
+    let mut field_names = Vec::new();
+
+    for field in fields {
+        let field_name = field.ident.as_ref().unwrap();
+        let field_name_str = field_name.to_string();
+
+        field_reads.push(quote! {
+            let key = v8::String::new(scope, #field_name_str).unwrap();
+            let value = obj.get(scope, key.into()).unwrap_or_else(|| v8::undefined(scope).into());
+            let #field_name = ::neptune_runtime::extension::FromV8::from_v8(scope, value)?;
+        });
+        field_names.push(field_name);
+    }
+
+    let generics = &input.generics;
+    let mut impl_generics_with_s = generics.clone();
+    if !impl_generics_with_s.params.iter().any(|p| matches!(p, syn::GenericParam::Lifetime(l) if l.lifetime.ident == "s")) {
+        impl_generics_with_s.params.push(syn::parse_quote!('s));
+    }
+    let (impl_generics, _, _) = impl_generics_with_s.split_for_impl();
+    let (_, ty_generics, where_clause) = generics.split_for_impl();
+
+    let expanded = quote! {
+        impl #impl_generics ::neptune_runtime::extension::FromV8<'s> for #name #ty_generics #where_clause {
+            fn from_v8(scope: &mut v8::PinScope<'s, '_>, value: v8::Local<'s, v8::Value>) -> Result<Self, ::neptune_runtime::extension::NeptuneError> {
+                if !value.is_object() {
+                    return Err(::neptune_runtime::extension::NeptuneError::StaticTypeError("Expected an object"));
+                }
+                let obj: v8::Local<v8::Object> = value.try_into().map_err(|_| ::neptune_runtime::extension::NeptuneError::StaticTypeError("Expected an object"))?;
+                
+                #(#field_reads)*
+
+                Ok(Self {
+                    #(#field_names),*
+                })
+            }
+        }
+    };
+
+    expanded.into()
+}
+
+#[proc_macro_derive(IntoV8)]
+pub fn derive_into_v8(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as syn::DeriveInput);
+    let name = &input.ident;
+
+    let syn::Data::Struct(data_struct) = &input.data else {
+        return syn::Error::new_spanned(name, "IntoV8 can only be derived for structs")
+            .to_compile_error()
+            .into();
+    };
+
+    let fields = match &data_struct.fields {
+        syn::Fields::Named(fields) => &fields.named,
+        _ => {
+            return syn::Error::new_spanned(name, "IntoV8 can only be derived for structs with named fields")
+                .to_compile_error()
+                .into();
+        }
+    };
+
+    let mut field_writes = Vec::new();
+
+    for field in fields {
+        let field_name = field.ident.as_ref().unwrap();
+        let field_name_str = field_name.to_string();
+
+        field_writes.push(quote! {
+            let key = v8::String::new(scope, #field_name_str).unwrap();
+            let value = ::neptune_runtime::extension::IntoV8::into_v8(self.#field_name, scope)?;
+            obj.set(scope, key.into(), value);
+        });
+    }
+
+    let generics = &input.generics;
+    let mut impl_generics_with_s = generics.clone();
+    if !impl_generics_with_s.params.iter().any(|p| matches!(p, syn::GenericParam::Lifetime(l) if l.lifetime.ident == "s")) {
+        impl_generics_with_s.params.push(syn::parse_quote!('s));
+    }
+    let (impl_generics, _, _) = impl_generics_with_s.split_for_impl();
+    let (_, ty_generics, where_clause) = generics.split_for_impl();
+
+    let expanded = quote! {
+        impl #impl_generics ::neptune_runtime::extension::IntoV8<'s> for #name #ty_generics #where_clause {
+            fn into_v8(self, scope: &mut v8::PinScope<'s, '_>) -> Result<v8::Local<'s, v8::Value>, ::neptune_runtime::extension::NeptuneError> {
+                let obj = v8::Object::new(scope);
+                
+                #(#field_writes)*
+
+                Ok(obj.into())
+            }
+        }
+    };
+
+    expanded.into()
+}
