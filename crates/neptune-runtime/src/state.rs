@@ -2,7 +2,7 @@ use std::{cell::Cell, collections::HashMap, rc::Rc};
 
 use futures::stream::FuturesUnordered;
 use tokio::sync::oneshot;
-use crate::{fsw::FilesystemWrapper, module::ModuleRegistry, runtime::{LogMessage, PipedMessage}, timer::QueueStream};
+use crate::{fsw::FilesystemWrapper, module::ModuleRegistry, native::web::CLONE_REGISTRY, runtime::{LogMessage, PipedMessage}, timer::QueueStream};
 pub type V8Result = Result<(), v8::Global<v8::Value>>;
 
 pub type OpHandlerFut = futures::future::LocalBoxFuture<'static, Box<dyn OpResolver>>;
@@ -26,15 +26,17 @@ pub struct IsolateState {
     // timer
     pub(super) queue_stream: QueueStream,
 
-    start_time: std::time::Instant,
-
     // Ensures monotonicity
+    start_time: std::time::Instant,
     last_reported_time: Cell<f64>,
 
     // embedder pipe
     pub(super) worker_to_embedder_cb: Option<Box<dyn FnMut(PipedMessage)>>,
     pub(super) embedder_to_worker_cb: Option<v8::Global<v8::Function>>,
-    pub(super) embedder_log_cb: Option<Rc<dyn Fn(LogMessage)>>
+    pub(super) embedder_log_cb: Option<Rc<dyn Fn(LogMessage)>>,
+
+    // cloneables
+    pub(super) cloneables: HashMap<u32, v8::Global<v8::Function>>
 }
 
 impl std::fmt::Debug for IsolateState {
@@ -58,7 +60,8 @@ impl IsolateState {
             last_reported_time: Cell::new(0.0),
             worker_to_embedder_cb: None,
             embedder_to_worker_cb: None,
-            embedder_log_cb: None
+            embedder_log_cb: None,
+            cloneables: HashMap::with_capacity(CLONE_REGISTRY.len()),
         });
     }
 

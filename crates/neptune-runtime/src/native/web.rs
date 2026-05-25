@@ -1,7 +1,16 @@
 // structuredClone is inspired by Deno
 use v8::{ValueDeserializerHelper, ValueSerializerHelper};
 
-struct SerializeDeserialize {}
+use crate::state_ref;
+
+pub(crate) const CLONE_REGISTRY: &[(&str, u32)] = &[
+    ("DOMException", 1),
+    ("QuotaExceededError", 2),
+];
+
+struct SerializeDeserialize {
+
+}
 
 impl v8::ValueSerializerImpl for SerializeDeserialize {
     fn throw_data_clone_error<'s, 'i>(
@@ -32,25 +41,58 @@ impl v8::ValueSerializerImpl for SerializeDeserialize {
     }
 
     fn has_custom_host_object(&self, _isolate: &v8::Isolate) -> bool {
-        false
+        true
     }
 
     fn is_host_object<'s, 'i>(
         &self,
-        _scope: &mut v8::PinScope<'s, 'i>,
-        _object: v8::Local<'s, v8::Object>,
+        scope: &mut v8::PinScope<'s, 'i>,
+        object: v8::Local<'s, v8::Object>,
     ) -> Option<bool> {
-        Some(false)
+        let brand_name = v8::String::new(scope, "NeptuneClone")?;
+        let private_key = v8::Private::for_api(scope, Some(brand_name));
+        object.has_private(scope, private_key)
     }
 
     fn write_host_object<'s, 'i>(
         &self,
         scope: &mut v8::PinScope<'s, 'i>,
-        _object: v8::Local<'s, v8::Object>,
-        _value_serializer: &dyn v8::ValueSerializerHelper,
+        object: v8::Local<'s, v8::Object>,
+        serializer: &dyn v8::ValueSerializerHelper,
     ) -> Option<bool> {
-        let message = v8::String::new(scope, "Unsupported object type").unwrap();
-        self.throw_data_clone_error(scope, message);
+        let context = scope.get_current_context();
+
+        let brand_name = v8::String::new(scope, "NeptuneClone")?;
+        let private_key = v8::Private::for_api(scope, Some(brand_name));
+
+        if let Some(tag_val) = object.get_private(scope, private_key) {
+            if let Ok(tag_uint) = v8::Local::<v8::Uint32>::try_from(tag_val) {
+                let tag = tag_uint.value();
+
+                match tag {
+                    1 | 2 => {
+                        // DOMException or QuotaExceededObject
+                        let msg_key = v8::String::new(scope, "message").unwrap();
+                        let name_key = v8::String::new(scope, "name").unwrap();
+                        let empty_str = v8::String::empty(scope);
+
+                        let msg_val = object.get(scope, msg_key.into()).unwrap_or(empty_str.into());
+                        let name_val = object.get(scope, name_key.into()).unwrap_or(empty_str.into());
+
+                        // Write to serializer
+                        serializer.write_uint32(tag);
+                        serializer.write_value(context, msg_val)?;
+                        serializer.write_value(context, name_val)?;
+
+                        return Some(true);
+                    },
+                    _ => return None,
+                }
+            }
+        }
+
+        let err_msg = v8::String::new(scope, "DataCloneError").unwrap();
+        self.throw_data_clone_error(scope, err_msg);
         None
     }
 }
@@ -74,9 +116,30 @@ impl v8::ValueDeserializerImpl for SerializeDeserialize {
 
     fn read_host_object<'s, 'i>(
         &self,
-        _scope: &mut v8::PinScope<'s, 'i>,
-        _value_deserializer: &dyn v8::ValueDeserializerHelper,
+        scope: &mut v8::PinScope<'s, 'i>,
+        deserializer: &dyn v8::ValueDeserializerHelper,
     ) -> Option<v8::Local<'s, v8::Object>> {
+        let context = scope.get_current_context();
+
+        let mut tag = 0;
+        deserializer.read_uint32(&mut tag);
+
+        if tag == 1 || tag == 2 { // DOMException or QuotaExceededError
+            let msg_val = deserializer.read_value(context)?;
+            let name_val = deserializer.read_value(context)?;
+
+            v8::allow_javascript_execution_scope!(let scope, scope);
+            state_ref!(let state, scope);
+            let ctor = state.cloneables.get(&tag)?;
+            let ctor = v8::Local::new(scope, ctor);
+
+            // (Executing JS here is perfectly safe because the GC isn't
+            // mid-traversal; we are at the end of the deserialization pipeline).
+            let cloned_exception = ctor.new_instance(scope, &[msg_val, name_val])?;
+
+            return Some(cloned_exception);
+        }
+
         None
     }
 }

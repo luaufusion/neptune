@@ -1,11 +1,13 @@
 use std::{borrow::Cow, collections::{HashMap, VecDeque}};
 
+use neptune_macros::op;
 use v8::MapFnTo;
 
-use crate::{extension::Globals, runtime::{ConsoleLogMode, LogMessage}, state_ref};
+use crate::{extension::{Globals, NeptuneError}, runtime::{ConsoleLogMode, LogMessage}, state_ref};
 
 // node
 const PRIMORDIALS: &str = include_str!("node/primordials.js");
+const DOM_EXCEPTION: &str = include_str!("node/domexception.js");
 
 // neptune
 const SCRIPT_EXEC_WRAPPER: &str = include_str!("neptune/script_exec_wrapper.js"); // script wrapper to execute all of neptunes js code correctly
@@ -100,6 +102,19 @@ fn bootstrap_console_log<'s>(
     }
 }
 
+#[op]
+pub fn brand_cloneable<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+    object: v8::Local<'s, v8::Object>,
+    tag: v8::Local<'s, v8::Uint32>
+) -> Result<(), NeptuneError> {
+    let brand_name = v8::String::new(scope, "NeptuneClone").ok_or(NeptuneError::StaticTypeError("Unable to create private branding token"))?;
+    let private_key = v8::Private::for_api(scope, Some(brand_name));
+    object.set_private(scope, private_key, tag.into());
+
+    Ok(())
+}
+
 pub struct BootstrapGlobals {}
 impl Globals for BootstrapGlobals {
     fn register<'s>(scope: &mut v8::PinScope<'s, '_>, global: v8::Local<v8::Object>) {
@@ -107,19 +122,21 @@ impl Globals for BootstrapGlobals {
 
         Self::add(scope, bobj, "getPromiseDetails", bootstrap_get_promise_details);
         Self::add(scope, bobj, "consoleLog", bootstrap_console_log);
+        Self::add(scope, bobj, "brandCloneable", brand_cloneable);
 
         let bkey = v8::String::new(scope, "bootstrap").unwrap();
         global.set(scope, bkey.into(), bobj.into());
     }
 
     fn get_external_references() -> Vec<(&'static str, v8::FunctionCallback)> {
-        vec![("getPromiseDetails", bootstrap_get_promise_details.map_fn_to()), ("consoleLog", bootstrap_console_log.map_fn_to())]
+        vec![("getPromiseDetails", bootstrap_get_promise_details.map_fn_to()), ("consoleLog", bootstrap_console_log.map_fn_to()), ("brandCloneable", brand_cloneable.map_fn_to())]
     }
 
     fn js_files() -> Vec<(Cow<'static, str>, Cow<'static, str>)> {
         // we need primordials first
         vec![
             (Cow::Borrowed("node/primordials.js"), Cow::Borrowed(PRIMORDIALS)),
+            (Cow::Borrowed("node/domexception.js"), Cow::Borrowed(DOM_EXCEPTION)),
             (Cow::Borrowed("neptune/console.js"), Cow::Borrowed(CONSOLE_JS))
         ]
     }
@@ -182,7 +199,7 @@ pub fn load_js<'s>(scope: &mut v8::PinScope<'s, '_>, files: Vec<(Cow<'static, st
 
     // Drop bootstrap obj
     let bkey = v8::String::new(scope, "bootstrap").unwrap();
-    scope.get_current_context().global(scope).set(scope, bkey.into(), v8::undefined(scope).into());
+    scope.get_current_context().global(scope).delete(scope, bkey.into());
 
     Ok(())
 }

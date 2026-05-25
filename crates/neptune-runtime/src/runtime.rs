@@ -9,6 +9,7 @@ use v8::{ContextOptions, CreateParams};
 use crate::buffer::v8_new_array_buffer;
 use crate::fsw::FilesystemWrapper;
 use crate::module::{create_module_origin, module_resolve_callback};
+use crate::native::web::CLONE_REGISTRY;
 use crate::runtime_snapshotter::NeptuneSnapshot;
 use crate::state::IsolateState;
 use crate::{state_mut, state_mut_raw, state_ref};
@@ -111,7 +112,23 @@ impl JsRuntime {
         let global_context = {
             v8::scope!(let scope, &mut isolate);
             let global_context = v8::Context::new(scope, ContextOptions::default());
-            v8::Global::new(scope, global_context)
+            let mut scope = v8::ContextScope::new(scope, global_context);
+
+            // While here, extract all the cloneables
+            let globals = global_context.global(&scope);
+            for (class_name, tag) in CLONE_REGISTRY {
+                let key = v8::String::new(&scope, class_name).unwrap();
+                
+                if let Some(val) = globals.get(&scope, key.into()) {
+                    if let Ok(func) = v8::Local::<v8::Function>::try_from(val) {
+                        let func = v8::Global::new(&scope, func);
+                        state_mut!(let state, scope);
+                        state.cloneables.insert(*tag, func);
+                    }
+                }
+            }
+
+            v8::Global::new(&scope, global_context)
         };
         
         Self {

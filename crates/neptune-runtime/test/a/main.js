@@ -1,6 +1,7 @@
 // Base test =================
 import * as a from "./b.js"
-console.log("GO", Reflect, eval, {a: "123"})
+
+console.log("GO", Reflect, eval, {a: "123"}, structuredClone(new DOMException("abc", "123")))
 console.log(Uint8Array, structuredClone, encodeURIComponent, decodeURIComponent, String.fromCodePoint, Math, atob, btoa, Uint8Array.fromBase64)
 console.log({a:1}.a, structuredClone({a:1}) == {a:1})
 console.log(new Promise((resolve) => resolve(123)))
